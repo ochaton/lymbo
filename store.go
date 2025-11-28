@@ -30,7 +30,7 @@ type Store interface {
 	// PollPending retrieves pending tickets ready for processing.
 	// Returns up to limit tickets sorted by priority (Runat, then Nice).
 	// Returns ErrLimitInvalid if limit <= 0.
-	PollPending(limit int, now time.Time, ttr time.Duration, maxBackoffDelay time.Duration) (PollResult, error)
+	PollPending(limit int, now time.Time, ttr time.Duration, maxBackoffDelay time.Duration, backoffBase float64) (PollResult, error)
 
 	// ExpireTickets removes expired tickets from the store.
 	// Only removes non-pending tickets where Runat is before now.

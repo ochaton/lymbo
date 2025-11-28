@@ -29,7 +29,10 @@ const (
 	// MaxBackoffDelay is the maximum delay between retry attempts.
 	MaxBackoffDelay = 15 * time.Second
 
-	secondsPerMinute       = 60
+	// BackoffBaseDefault is the default base for exponential backoff calculations.
+	BackoffBaseDefault = 1.5
+
+	secondsPerMinute = 60
 	secondsPerHour         = 60 * secondsPerMinute
 	secondsPerDay          = 24 * secondsPerHour
 	unixToInternal   int64 = (1969*365 + 1969/4 - 1969/100 + 1969/400) * secondsPerDay
@@ -55,6 +58,11 @@ type Settings struct {
 
 	// maxBackoffDelay is the maximum delay between retry attempts.
 	maxBackoffDelay time.Duration
+
+	// backoffBase is the base for exponential backoff calculations.
+	// The delay is calculated as: base^attempts.
+	// Defaults to BackoffBaseDefault (1.5).
+	backoffBase float64
 
 	// maxPollInterval is the maximum time to wait between store polls.
 	// Defaults to MaxPollIntervalDefault.
@@ -83,6 +91,7 @@ func DefaultSettings() *Settings {
 		maxPollInterval:  MaxPollIntervalDefault,
 		minPollInterval:  MinPollIntervalDefault,
 		maxBackoffDelay:  MaxBackoffDelay,
+		backoffBase:      BackoffBaseDefault,
 		batchSize:        10,
 		workers:          4,
 		enableExpiration: true,
@@ -101,6 +110,13 @@ func (s *Settings) WithWorkers(workers int) *Settings {
 
 func (s *Settings) WithBatchSize(batchSize int) *Settings {
 	s.batchSize = batchSize
+	return s
+}
+
+// WithBackoffBase sets the base for exponential backoff calculations.
+// The delay is calculated as: base^attempts.
+func (s *Settings) WithBackoffBase(base float64) *Settings {
+	s.backoffBase = base
 	return s
 }
 
@@ -133,6 +149,9 @@ func (s *Settings) normalize() {
 	}
 	if s.batchSize > s.workers {
 		s.batchSize = s.workers
+	}
+	if s.backoffBase <= 0 {
+		s.backoffBase = BackoffBaseDefault
 	}
 }
 
@@ -271,7 +290,7 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(sleepDuration):
-			result, err := k.store.PollPending(k.settings.batchSize, time.Now(), k.settings.processTime, k.settings.maxBackoffDelay)
+			result, err := k.store.PollPending(k.settings.batchSize, time.Now(), k.settings.processTime, k.settings.maxBackoffDelay, k.settings.backoffBase)
 			if err != nil {
 				k.logger.ErrorContext(ctx, "error polling store", "error", err)
 				continue
