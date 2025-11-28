@@ -82,7 +82,7 @@ func (m *MemoryStore) Update(ctx context.Context, tid lymbo.TicketId, fn lymbo.U
 
 // PollPending retrieves pending tickets ready for processing.
 // It returns up to limit tickets that are ready to run, sorted by priority.
-func (m *MemoryStore) PollPending(limit int, now time.Time, ttr time.Duration, maxBackoffDelay time.Duration) (lymbo.PollResult, error) {
+func (m *MemoryStore) PollPending(limit int, now time.Time, ttr time.Duration, maxBackoffDelay time.Duration, backoffBase float64) (lymbo.PollResult, error) {
 	if limit <= 0 {
 		return lymbo.PollResult{}, lymbo.ErrLimitInvalid
 	}
@@ -128,8 +128,7 @@ func (m *MemoryStore) PollPending(limit int, now time.Time, ttr time.Duration, m
 
 	// Update tickets with exponential backoff for next attempt.
 	for _, t := range ready {
-		// TODO: move this logic to configuration
-		delay := time.Duration(math.Pow(1.5, float64(t.Attempts)))
+		delay := time.Duration(math.Pow(backoffBase, float64(t.Attempts)))
 		delay = min(delay, maxBackoffDelay)
 		delay += ttr
 		t.Runat = now.Add(delay)
