@@ -150,7 +150,7 @@ func (s *Settings) normalize() {
 	if s.batchSize > s.workers {
 		s.batchSize = s.workers
 	}
-	if s.backoffBase <= 0 {
+	if s.backoffBase <= 1 {
 		s.backoffBase = BackoffBaseDefault
 	}
 }
