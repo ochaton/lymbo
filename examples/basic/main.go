@@ -30,8 +30,8 @@ func main() {
 		WithExpirationInterval(1 * time.Second).
 		WithProcessTime(100 * time.Microsecond).
 		WithWorkers(32).
-		WithBatchSize(32).
-		WithMinReactionDelay(50 * time.Microsecond).
+		WithBatchSize(64).
+		WithMinReactionDelay(500 * time.Microsecond).
 		WithMaxReactionDelay(1 * time.Second)
 
 	var kh *lymbo.Kharon

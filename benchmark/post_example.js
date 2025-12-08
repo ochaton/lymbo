@@ -14,7 +14,7 @@ export default function () {
   // Generate UUID using JS (client-side, no shell call)
   const uuid = crypto.randomUUID();
 
-  const url = `http://127.0.0.1:8080/ticket/example/${uuid}`;
+  const url = `http://127.0.0.1:8080/ticket/ack/${uuid}`;
   const res = http.post(url, null, {});
 
   check(res, {

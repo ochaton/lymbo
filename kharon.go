@@ -35,6 +35,11 @@ const (
 	InfinityDelay time.Duration = 100 * 365 * 24 * time.Hour
 )
 
+type msg struct {
+	tid TicketId
+	upd *UpdateSet
+}
+
 // Kharon is the main orchestrator for the job processing system.
 // It coordinates polling, dispatching, and processing of tickets.
 type Kharon struct {
@@ -42,6 +47,7 @@ type Kharon struct {
 	settings Settings
 	logger   *slog.Logger
 	income   chan *Ticket
+	outcome  chan msg
 
 	stats *stats
 }
@@ -72,7 +78,8 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 		store:    store,
 		settings: *s,
 		logger:   logger,
-		income:   make(chan *Ticket),
+		income:   make(chan *Ticket, s.workers),
+		outcome:  make(chan msg, 10*s.workers),
 		stats:    newStats(),
 	}
 }
@@ -105,18 +112,37 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
 	}
 
 	runat := time.Now().Add(o.delay)
-	return k.store.UpdateSet(ctx, tid, UpdateSet{
-		Status:      o.status,
-		Nice:        o.nice,
-		Runat:       &runat,
-		Payload:     o.payload,
-		ErrorReason: o.errorReason,
-	})
+	k.outcome <- msg{
+		tid: tid,
+		upd: &UpdateSet{
+			Id:          tid,
+			Status:      o.status,
+			Nice:        o.nice,
+			Runat:       &runat,
+			Payload:     o.payload,
+			ErrorReason: o.errorReason,
+		},
+	}
+	return nil
+	// return k.store.UpdateSet(ctx, UpdateSet{
+	// 	Id:          tid,
+	// 	Status:      o.status,
+	// 	Nice:        o.nice,
+	// 	Runat:       &runat,
+	// 	Payload:     o.payload,
+	// 	ErrorReason: o.errorReason,
+	// })
 }
 
-func (k *Kharon) delete(ctx context.Context, tid TicketId) error {
+func (k *Kharon) delete(_ context.Context, tid TicketId) error {
 	// we should batch deletes, but for now...
-	return k.store.Delete(ctx, tid)
+	// what if do nothing?
+	k.outcome <- msg{
+		tid: tid,
+		upd: nil,
+	}
+	return nil
+	// return k.store.Delete(ctx, tid)
 }
 
 func toOpts(o *Opts, opts ...Option) *Opts {
@@ -238,6 +264,7 @@ func (k *Kharon) Stats() Stats {
 func (k *Kharon) Run(ctx context.Context, r *Router) error {
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer close(k.outcome)
 	defer close(k.income)
 
 	work := func(ctx context.Context) {
@@ -260,6 +287,54 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 			}
 		}
 	}
+
+	push := func(ctx context.Context) {
+		defer k.logger.DebugContext(ctx, "push exiting")
+		t := time.NewTicker(100 * time.Millisecond)
+		defer t.Stop()
+
+		batch := []msg{}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case m, ok := <-k.outcome:
+				if !ok {
+					return
+				}
+				// There are basically 2 batches:
+				// 1. those to delete
+				// 2. those to save (update)
+				batch = append(batch, m)
+			case <-t.C:
+				delIds := []TicketId{}
+				for _, m := range batch {
+					if m.upd == nil {
+						delIds = append(delIds, m.tid)
+					}
+				}
+				upds := []UpdateSet{}
+				for _, m := range batch {
+					if m.upd == nil {
+						continue
+					}
+					upds = append(upds, *m.upd)
+				}
+				batch = batch[:0]
+				go func() {
+					if err := k.store.DeleteBatch(ctx, delIds); err != nil {
+						k.logger.ErrorContext(ctx, "error deleting batch", "error", err)
+					}
+					if err := k.store.UpdateBatch(ctx, upds); err != nil {
+						k.logger.ErrorContext(ctx, "error updating batch", "error", err)
+					}
+				}()
+			}
+		}
+	}
+
+	go push(wctx)
 
 	for range k.settings.workers {
 		go work(wctx)

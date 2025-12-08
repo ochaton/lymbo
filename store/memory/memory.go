@@ -63,6 +63,48 @@ func (m *Store) Delete(_ context.Context, id lymbo.TicketId) error {
 	return nil
 }
 
+func (m *Store) DeleteBatch(_ context.Context, ids []lymbo.TicketId) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, id := range ids {
+		delete(m.data, id)
+	}
+	return nil
+}
+
+func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
+	if us.Nice != nil {
+		t.Nice = *us.Nice
+	}
+	if us.Runat != nil {
+		t.Runat = *us.Runat
+	}
+	if us.Payload != nil {
+		t.Payload = us.Payload
+	}
+	if us.ErrorReason != nil {
+		t.ErrorReason = us.ErrorReason
+	}
+}
+
+func (m *Store) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, us := range updates {
+		t, exists := m.data[us.Id]
+		if !exists {
+			return lymbo.ErrTicketNotFound
+		}
+
+		updateOne(&t, us)
+		m.data[t.ID] = t
+	}
+
+	return nil
+}
+
 func (m *Store) Update(ctx context.Context, tid lymbo.TicketId, fn lymbo.UpdateFunc) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -80,29 +122,17 @@ func (m *Store) Update(ctx context.Context, tid lymbo.TicketId, fn lymbo.UpdateF
 	return nil
 }
 
-func (m *Store) UpdateSet(ctx context.Context, tid lymbo.TicketId, us lymbo.UpdateSet) error {
+func (m *Store) UpdateSet(ctx context.Context, us lymbo.UpdateSet) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t, exists := m.data[tid]
+	t, exists := m.data[us.Id]
 	if !exists {
 		return lymbo.ErrTicketNotFound
 	}
 
-	if us.Nice != nil {
-		t.Nice = *us.Nice
-	}
-	if us.Runat != nil {
-		t.Runat = *us.Runat
-	}
-	if us.Payload != nil {
-		t.Payload = us.Payload
-	}
-	if us.ErrorReason != nil {
-		t.ErrorReason = us.ErrorReason
-	}
-
-	m.data[tid] = t
+	updateOne(&t, us)
+	m.data[us.Id] = t
 	return nil
 }
 

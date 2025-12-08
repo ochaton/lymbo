@@ -18,6 +18,7 @@ type PollRequest struct {
 }
 
 type UpdateSet struct {
+	Id          TicketId
 	Status      *status.Status
 	Nice        *int
 	Runat       *time.Time
@@ -47,7 +48,7 @@ type Store interface {
 
 	// UpdateSet modifies an existing ticket using the provided UpdateSet.
 	// it does not fetch the ticket, the request is only Update.
-	UpdateSet(context.Context, TicketId, UpdateSet) error
+	UpdateSet(context.Context, UpdateSet) error
 
 	// PollPending retrieves pending tickets ready for processing.
 	// Returns up to limit tickets sorted by priority (Runat, then Nice).
@@ -59,6 +60,14 @@ type Store interface {
 	// Only removes non-pending tickets where Runat is before now.
 	// Deletes up to limit tickets.
 	ExpireTickets(ctx context.Context, limit int, now time.Time) (int64, error)
+
+	// DeleteBatch removes multiple tickets from the store.
+	// This operation is idempotent and won't return an error if some tickets don't exist.
+	DeleteBatch(ctx context.Context, ids []TicketId) error
+
+	// UpdateBatch modifies multiple tickets using the provided UpdateFunc.
+	// The UpdateFunc receives a pointer to each ticket to modify.
+	UpdateBatch(ctx context.Context, updates []UpdateSet) error
 }
 
 // PollResult contains the result of a store polling operation.

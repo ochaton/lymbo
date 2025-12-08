@@ -202,6 +202,36 @@ func (r *Tickets) Delete(ctx context.Context, id lymbo.TicketId) error {
 	return err
 }
 
+func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	ticketUUIDs := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		ticketUUID, err := uuid.Parse(id.String())
+		if err != nil {
+			return lymbo.ErrTicketIDInvalid
+		}
+		ticketUUIDs = append(ticketUUIDs, ticketUUID)
+	}
+
+	batch := &pgx.Batch{}
+	for _, ticketUUID := range ticketUUIDs {
+		batch.Queue(r.queries.delete, ticketUUID)
+	}
+
+	br := r.db.SendBatch(ctx, batch)
+	defer br.Close()
+
+	if _, err := br.Exec(); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.UpdateFunc) error {
 	ticketUUID, err := uuid.Parse(id.String())
 	if err != nil {
@@ -322,14 +352,9 @@ type updateSetParams struct {
 	error_reason []byte         // $6
 }
 
-func (r *Tickets) UpdateSet(ctx context.Context, id lymbo.TicketId, us lymbo.UpdateSet) error {
-	ticketUUID, err := uuid.Parse(id.String())
-	if err != nil {
-		return lymbo.ErrTicketIDInvalid
-	}
-
-	usp := updateSetParams{
-		id: ticketUUID,
+func updateOne(tid uuid.UUID, us lymbo.UpdateSet) (*updateSetParams, error) {
+	usp := &updateSetParams{
+		id: tid,
 	}
 
 	if us.Status != nil {
@@ -344,16 +369,29 @@ func (r *Tickets) UpdateSet(ctx context.Context, id lymbo.TicketId, us lymbo.Upd
 	if us.Payload != nil {
 		payload, err := json.Marshal(us.Payload)
 		if err != nil {
-			return fmt.Errorf("failed to marshal payload: %w", err)
+			return nil, fmt.Errorf("failed to marshal payload: %w", err)
 		}
 		usp.payload = payload
 	}
 	if us.ErrorReason != nil {
 		errorReason, err := json.Marshal(us.ErrorReason)
 		if err != nil {
-			return fmt.Errorf("failed to marshal error_reason: %w", err)
+			return nil, fmt.Errorf("failed to marshal error_reason: %w", err)
 		}
 		usp.error_reason = errorReason
+	}
+	return usp, nil
+}
+
+func (r *Tickets) UpdateSet(ctx context.Context, us lymbo.UpdateSet) error {
+	ticketUUID, err := uuid.Parse(us.Id.String())
+	if err != nil {
+		return lymbo.ErrTicketIDInvalid
+	}
+
+	usp, err := updateOne(ticketUUID, us)
+	if err != nil {
+		return err
 	}
 
 	_, err = r.db.Exec(ctx, r.queries.update,
@@ -365,6 +403,44 @@ func (r *Tickets) UpdateSet(ctx context.Context, id lymbo.TicketId, us lymbo.Upd
 		usp.error_reason,
 	)
 	return err
+}
+
+func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+
+	for _, us := range updates {
+		ticketUUID, err := uuid.Parse(us.Id.String())
+		if err != nil {
+			return lymbo.ErrTicketIDInvalid
+		}
+
+		usp, err := updateOne(ticketUUID, us)
+		if err != nil {
+			return err
+		}
+
+		batch.Queue(r.queries.update,
+			usp.id,
+			usp.status,
+			usp.nice,
+			usp.runat,
+			usp.payload,
+			usp.error_reason,
+		)
+	}
+
+	br := r.db.SendBatch(ctx, batch)
+	defer br.Close()
+
+	_, err := br.Exec()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type pollPendingParams struct {
