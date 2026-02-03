@@ -67,20 +67,20 @@ func main() {
 
 	r := lymbo.NewRouter()
 	r.HandleFunc("ack", func(ctx context.Context, t *lymbo.Ticket) error {
-		return kh.Ack(ctx, t.ID)
+		return kh.Ack(ctx, t)
 	})
 	r.HandleFunc("fail", func(ctx context.Context, t *lymbo.Ticket) error {
-		return kh.Fail(ctx, t.ID, lymbo.WithErrorReason("failed by handler"), lymbo.WithDelay(10*time.Second))
+		return kh.Fail(ctx, t, lymbo.WithErrorReason("failed by handler"), lymbo.WithDelay(lymbo.FixedDelay(10*time.Second)))
 	})
 	r.HandleFunc("done", func(ctx context.Context, t *lymbo.Ticket) error {
-		return kh.Done(ctx, t.ID)
+		return kh.Done(ctx, t)
 	})
 	r.HandleFunc("cancel", func(ctx context.Context, t *lymbo.Ticket) error {
-		return kh.Cancel(ctx, t.ID)
+		return kh.Cancel(ctx, t)
 	})
 	r.NotFoundFunc(func(ctx context.Context, t *lymbo.Ticket) error {
 		slog.DebugContext(ctx, "unknown ticket type", "ticket_id", t.ID, "ticket_type", t.Type)
-		return kh.Fail(ctx, t.ID, lymbo.WithErrorReason("unsupported ticket type"), lymbo.WithDelay(30*time.Second))
+		return kh.Fail(ctx, t, lymbo.WithErrorReason("unsupported ticket type"), lymbo.WithDelay(lymbo.FixedDelay(30*time.Second)))
 	})
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -252,7 +252,18 @@ func (h *CancelTicketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := h.kh.Cancel(r.Context(), lymbo.TicketId(id), lymbo.WithErrorReason("cancelled via api"))
+	ticket, err := h.kh.Get(r.Context(), lymbo.TicketId(id))
+	if err == lymbo.ErrTicketNotFound {
+		http.Error(w, "ticket not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to get ticket", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	err = h.kh.Cancel(r.Context(), &ticket, lymbo.WithErrorReason("cancelled via api"))
 	switch err {
 	case nil:
 		w.WriteHeader(http.StatusNoContent)
@@ -336,7 +347,7 @@ func (h *AddTicketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "invalid parameters", http.StatusBadRequest)
 				return
 			}
-			opts = append(opts, lymbo.WithDelay(time.Duration(dx*float64(time.Second))))
+			opts = append(opts, lymbo.WithDelay(lymbo.FixedDelay(time.Duration(dx*float64(time.Second)))))
 		}
 	}
 

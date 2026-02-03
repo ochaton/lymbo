@@ -80,3 +80,8 @@ func (t *Ticket) WithRunat(runat time.Time) *Ticket {
 	t.Runat = runat
 	return t
 }
+
+// GetAttempts implements DelayContext.
+func (t *Ticket) GetAttempts() int {
+	return t.Attempts
+}

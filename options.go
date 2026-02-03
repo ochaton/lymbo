@@ -2,10 +2,36 @@ package lymbo
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/ochaton/lymbo/status"
 )
+
+// DelayContext provides ticket data for delay calculation.
+type DelayContext interface {
+	GetAttempts() int
+}
+
+// DelayFunc calculates retry delay based on ticket context.
+type DelayFunc func(ctx DelayContext) time.Duration
+
+// FixedDelay returns a strategy with fixed delay.
+func FixedDelay(d time.Duration) DelayFunc {
+	return func(_ DelayContext) time.Duration { return d }
+}
+
+// ExponentialBackoff returns a strategy with exponential growth.
+// Formula: min(maxDelay, baseDelay * factor^attempts)
+func ExponentialBackoff(baseDelay, maxDelay time.Duration, factor float64) DelayFunc {
+	return func(ctx DelayContext) time.Duration {
+		delay := time.Duration(float64(baseDelay) * math.Pow(factor, float64(ctx.GetAttempts())))
+		if delay > maxDelay {
+			return maxDelay
+		}
+		return delay
+	}
+}
 
 // Option is a functional option for configuring ticket operations.
 type Option func(o *Opts)
@@ -14,6 +40,9 @@ type Option func(o *Opts)
 type Opts struct {
 	// delay sets a delay before the ticket becomes eligible for processing.
 	delay time.Duration
+
+	// delayFunc calculates delay based on ticket context (takes precedence over delay).
+	delayFunc DelayFunc
 
 	// status sets the ticket's status.
 	status *status.Status
@@ -51,10 +80,10 @@ func WithErrorReason(reason any) Option {
 	}
 }
 
-// WithDelay sets a delay before the ticket becomes eligible for processing.
-func WithDelay(delay time.Duration) Option {
+// WithDelay sets a delay strategy for calculating when the ticket becomes eligible for processing.
+func WithDelay(d DelayFunc) Option {
 	return func(o *Opts) {
-		o.delay = delay
+		o.delayFunc = d
 	}
 }
 
@@ -77,3 +106,4 @@ func WithPayload(payload any) Option {
 		o.payload = payload
 	}
 }
+

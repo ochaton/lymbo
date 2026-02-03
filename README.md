@@ -46,10 +46,10 @@ func main() {
 
     // Create a router to handle different ticket types
     r := lymbo.NewRouter()
-    r.HandleFunc("example", func(ctx context.Context, t lymbo.Ticket) error {
+    r.HandleFunc("example", func(ctx context.Context, t *lymbo.Ticket) error {
         logger.InfoContext(ctx, "processing ticket", "id", t.ID, "payload", t.Payload)
         // Do your work here
-        return kh.Done(ctx, t.ID)
+        return kh.Done(ctx, t)
     })
 
     // Start processing tickets
@@ -96,9 +96,8 @@ err = kh.Put(ctx, *ticket)
 
 // Add ticket with options (applied during Put)
 err = kh.Put(ctx, *ticket,
-    lymbo.WithDelay(5*time.Minute),  // Delay first execution
-    lymbo.WithNice(10),               // Set priority
-    ),
+    lymbo.WithDelay(lymbo.FixedDelay(5*time.Minute)),  // Delay first execution
+    lymbo.WithNice(10),                                 // Set priority
 )
 ```
 
@@ -110,15 +109,15 @@ Use the Router to register handlers for different ticket types:
 r := lymbo.NewRouter()
 
 // Register a handler for a specific type
-r.HandleFunc("email", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("email", func(ctx context.Context, t *lymbo.Ticket) error {
     // Process email ticket
     sendEmail(t.Payload)
-    return kh.Done(ctx, t.ID)
+    return kh.Done(ctx, t)
 })
 
 // Handle unknown ticket types
-r.NotFoundFunc(func(ctx context.Context, t lymbo.Ticket) error {
-    return kh.Fail(ctx, t.ID, lymbo.WithErrorReason("unsupported type"))
+r.NotFoundFunc(func(ctx context.Context, t *lymbo.Ticket) error {
+    return kh.Fail(ctx, t, lymbo.WithErrorReason("unsupported type"))
 })
 ```
 
@@ -132,15 +131,15 @@ Acknowledges successful processing and removes the ticket from the store (unless
 
 ```go
 // Acknowledge and remove ticket immediately
-err := kh.Ack(ctx, ticketID)
+err := kh.Ack(ctx, t)
 
 // Acknowledge but keep ticket in store forever
-err := kh.Ack(ctx, ticketID, lymbo.WithKeep())
+err := kh.Ack(ctx, t, lymbo.WithKeep())
 
 // Keep ticket with TTL (will be auto-removed after delay)
-err := kh.Ack(ctx, ticketID,
+err := kh.Ack(ctx, t,
     lymbo.WithKeep(),
-    lymbo.WithDelay(24*time.Hour), // Remove after 24 hours
+    lymbo.WithDelay(lymbo.FixedDelay(24*time.Hour)), // Remove after 24 hours
 )
 ```
 
@@ -150,16 +149,16 @@ Marks ticket as done and **automatically keeps it in the store**. This is equiva
 
 ```go
 // Mark as done (kept in store indefinitely)
-err := kh.Done(ctx, ticketID)
+err := kh.Done(ctx, t)
 
 // Mark as done with TTL for auto-removal
-err := kh.Done(ctx, ticketID,
-    lymbo.WithDelay(1*time.Hour), // Auto-remove after 1 hour
+err := kh.Done(ctx, t,
+    lymbo.WithDelay(lymbo.FixedDelay(1*time.Hour)), // Auto-remove after 1 hour
 )
 
 // Update ticket payload before marking done
-err := kh.Done(ctx, ticketID,
-    lymbo.WithDelay(24*time.Hour),
+err := kh.Done(ctx, t,
+    lymbo.WithDelay(lymbo.FixedDelay(24*time.Hour)),
     lymbo.WithUpdate(func(ctx context.Context, t *lymbo.Ticket) error {
         // Store struct directly - no need to pre-marshal
         t.Payload = map[string]any{"result": "success", "completedAt": time.Now()}
@@ -174,18 +173,18 @@ Marks ticket as failed and **keeps it in the store** for debugging/audit.
 
 ```go
 // Mark ticket as failed with error reason
-err := kh.Fail(ctx, ticketID,
+err := kh.Fail(ctx, t,
     lymbo.WithErrorReason("connection timeout"),
 )
 
 // Fail with TTL for auto-cleanup
-err := kh.Fail(ctx, ticketID,
+err := kh.Fail(ctx, t,
     lymbo.WithErrorReason("database error"),
-    lymbo.WithDelay(7*24*time.Hour), // Keep for 7 days
+    lymbo.WithDelay(lymbo.FixedDelay(7*24*time.Hour)), // Keep for 7 days
 )
 
 // Fail and update ticket data
-err := kh.Fail(ctx, ticketID,
+err := kh.Fail(ctx, t,
     lymbo.WithErrorReason(map[string]any{
         "error": "invalid input",
         "code": 400,
@@ -207,18 +206,18 @@ Cancels a ticket. By default, removes it from the store unless `WithKeep()` is u
 
 ```go
 // Cancel and remove immediately
-err := kh.Cancel(ctx, ticketID)
+err := kh.Cancel(ctx, t)
 
 // Cancel but keep in store
-err := kh.Cancel(ctx, ticketID,
+err := kh.Cancel(ctx, t,
     lymbo.WithKeep(),
     lymbo.WithErrorReason("cancelled by user"),
 )
 
 // Cancel with TTL
-err := kh.Cancel(ctx, ticketID,
+err := kh.Cancel(ctx, t,
     lymbo.WithKeep(),
-    lymbo.WithDelay(30*24*time.Hour), // Keep for 30 days
+    lymbo.WithDelay(lymbo.FixedDelay(30*24*time.Hour)), // Keep for 30 days
 )
 ```
 
@@ -228,22 +227,22 @@ Reschedules a ticket for future processing with updated parameters.
 
 ```go
 // Retry immediately with default backoff
-err := kh.Retry(ctx, ticketID)
+err := kh.Retry(ctx, t)
 
 // Retry with custom delay
-err := kh.Retry(ctx, ticketID,
-    lymbo.WithDelay(5*time.Minute), // Retry in 5 minutes
+err := kh.Retry(ctx, t,
+    lymbo.WithDelay(lymbo.FixedDelay(5*time.Minute)), // Retry in 5 minutes
 )
 
 // Retry with priority change
-err := kh.Retry(ctx, ticketID,
-    lymbo.WithDelay(1*time.Minute),
+err := kh.Retry(ctx, t,
+    lymbo.WithDelay(lymbo.FixedDelay(1*time.Minute)),
     lymbo.WithNice(1), // Higher priority for retry
 )
 
 // Retry with payload update
-err := kh.Retry(ctx, ticketID,
-    lymbo.WithDelay(10*time.Second),
+err := kh.Retry(ctx, t,
+    lymbo.WithDelay(lymbo.FixedDelay(10*time.Second)),
     lymbo.WithUpdate(func(ctx context.Context, t *lymbo.Ticket) error {
         // Add retry metadata to payload
         payload := t.Payload.(map[string]any)
@@ -270,11 +269,16 @@ All state management methods (`Retry`, `Done`, `Cancel`, `Fail`, `Put`, `Ack`) s
 
 | Option | Description | Applicable Methods |
 |--------|-------------|-------------------|
-| `WithDelay(d time.Duration)` | Delay next processing or set TTL for auto-removal | All |
+| `WithDelay(d DelayFunc)` | Delay next processing or set TTL for auto-removal | All |
 | `WithNice(n int)` | Change ticket priority (lower = higher priority) | All |
 | `WithUpdate(fn func(context.Context, *Ticket) error)` | Custom ticket modification (executed after other options) | All |
 | `WithKeep()` | Keep ticket in store instead of removing | `Ack`, `Cancel` |
 | `WithErrorReason(reason any)` | Store error/cancellation reason | `Fail`, `Cancel`, `Retry` |
+
+**Delay Functions:**
+
+- `FixedDelay(d time.Duration)` - Returns a fixed delay duration
+- `ExponentialBackoff(base float64, max time.Duration)` - Returns exponential backoff based on ticket attempts: `min(base^attempts * second, max)`
 
 **Important Notes:**
 
@@ -440,20 +444,20 @@ UUIDv7 provides:
 Always handle errors appropriately in ticket handlers:
 
 ```go
-r.HandleFunc("task", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("task", func(ctx context.Context, t *lymbo.Ticket) error {
     if err := doWork(t.Payload); err != nil {
         if isTransientError(err) {
             // Retry transient errors with backoff
-            return kh.Retry(ctx, t.ID, lymbo.WithDelay(5*time.Minute))
+            return kh.Retry(ctx, t, lymbo.WithDelay(lymbo.FixedDelay(5*time.Minute)))
         }
         // Permanent failure - keep for debugging
-        return kh.Fail(ctx, t.ID,
+        return kh.Fail(ctx, t,
             lymbo.WithErrorReason(err.Error()),
-            lymbo.WithDelay(7*24*time.Hour),
+            lymbo.WithDelay(lymbo.FixedDelay(7*24*time.Hour)),
         )
     }
     // Success - acknowledge and remove
-    return kh.Ack(ctx, t.ID)
+    return kh.Ack(ctx, t)
 })
 ```
 
@@ -472,13 +476,13 @@ payload := TaskPayload{UserID: "123", Action: "sync"}
 ticket := ticket.WithPayload(payload)
 
 // In your handler, retrieve and use the payload
-r.HandleFunc("task", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("task", func(ctx context.Context, t *lymbo.Ticket) error {
     var payload TaskPayload
     if err := json.Unmarshal(t.Payload.([]byte), &payload); err != nil {
-        return kh.Fail(ctx, t.ID, lymbo.WithErrorReason(err))
+        return kh.Fail(ctx, t, lymbo.WithErrorReason(err))
     }
     // Use payload.UserID, payload.Action, etc.
-    return kh.Ack(ctx, t.ID)
+    return kh.Ack(ctx, t)
 })
 ```
 
@@ -501,47 +505,47 @@ See [examples/basic/main.go](examples/basic/main.go) for a complete working exam
 **Background job processing:**
 
 ```go
-r.HandleFunc("send-email", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("send-email", func(ctx context.Context, t *lymbo.Ticket) error {
     if err := sendEmail(t.Payload); err != nil {
         // Retry with exponential backoff
-        return kh.Retry(ctx, t.ID)
+        return kh.Retry(ctx, t)
     }
     // Success - remove from store
-    return kh.Ack(ctx, t.ID)
+    return kh.Ack(ctx, t)
 })
 ```
 
 **State reconciliation with audit trail:**
 
 ```go
-r.HandleFunc("sync-user", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("sync-user", func(ctx context.Context, t *lymbo.Ticket) error {
     if err := syncUserToExternalSystem(t.Payload); err != nil {
         // Keep failed ticket for debugging, auto-remove after 7 days
-        return kh.Fail(ctx, t.ID,
+        return kh.Fail(ctx, t,
             lymbo.WithErrorReason(err.Error()),
-            lymbo.WithDelay(7*24*time.Hour),
+            lymbo.WithDelay(lymbo.FixedDelay(7*24*time.Hour)),
         )
     }
     // Keep successful sync record for 24 hours
-    return kh.Done(ctx, t.ID, lymbo.WithDelay(24*time.Hour))
+    return kh.Done(ctx, t, lymbo.WithDelay(lymbo.FixedDelay(24*time.Hour)))
 })
 ```
 
 **Rate-limited API calls:**
 
 ```go
-r.HandleFunc("api-call", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("api-call", func(ctx context.Context, t *lymbo.Ticket) error {
     if err := callRateLimitedAPI(t.Payload); err != nil {
         if isRateLimitError(err) {
             // Retry with custom delay and lower priority
-            return kh.Retry(ctx, t.ID,
-                lymbo.WithDelay(5*time.Minute),
+            return kh.Retry(ctx, t,
+                lymbo.WithDelay(lymbo.FixedDelay(5*time.Minute)),
                 lymbo.WithNice(100), // Lower priority
             )
         }
-        return kh.Fail(ctx, t.ID, lymbo.WithErrorReason(err))
+        return kh.Fail(ctx, t, lymbo.WithErrorReason(err))
     }
-    return kh.Ack(ctx, t.ID)
+    return kh.Ack(ctx, t)
 })
 ```
 
@@ -553,14 +557,14 @@ type WorkflowPayload struct {
     UserID string `json:"user_id"`
 }
 
-r.HandleFunc("multi-step", func(ctx context.Context, t lymbo.Ticket) error {
+r.HandleFunc("multi-step", func(ctx context.Context, t *lymbo.Ticket) error {
     var payload WorkflowPayload
     json.Unmarshal(t.Payload.([]byte), &payload)
 
     if payload.Step < 3 {
         // Move to next step
-        return kh.Retry(ctx, t.ID,
-            lymbo.WithDelay(1*time.Second),
+        return kh.Retry(ctx, t,
+            lymbo.WithDelay(lymbo.FixedDelay(1*time.Second)),
             lymbo.WithUpdate(func(ctx context.Context, ticket *lymbo.Ticket) error {
                 // Increment step in payload
                 payload.Step++
@@ -571,7 +575,7 @@ r.HandleFunc("multi-step", func(ctx context.Context, t lymbo.Ticket) error {
     }
 
     // All steps complete
-    return kh.Done(ctx, t.ID)
+    return kh.Done(ctx, t)
 })
 ```
 

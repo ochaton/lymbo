@@ -86,8 +86,19 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 }
 
 func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
-	t.Status = *o.status
-	t.Runat = time.Now().Add(o.delay)
+	if o.status != nil {
+		t.Status = *o.status
+	}
+
+	// Calculate delay via strategy or use fixed delay
+	var delay time.Duration
+	if o.delayFunc != nil {
+		delay = o.delayFunc(t)
+	} else {
+		delay = o.delay
+	}
+	t.Runat = time.Now().Add(delay)
+
 	if o.errorReason != nil {
 		t.ErrorReason = o.errorReason
 	}
@@ -105,18 +116,29 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 	return nil
 }
 
-func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
+func (k *Kharon) save(ctx context.Context, t *Ticket, o *Opts) error {
+	if t == nil {
+		return ErrTicketNil
+	}
 	if o.update != nil {
-		return k.store.Update(ctx, tid, func(ctx context.Context, t *Ticket) error {
+		return k.store.Update(ctx, t.ID, func(ctx context.Context, t *Ticket) error {
 			return beforeUpdate(ctx, t, o)
 		})
 	}
 
-	runat := time.Now().Add(o.delay)
+	// Calculate delay via strategy or use fixed delay
+	var delay time.Duration
+	if o.delayFunc != nil {
+		delay = o.delayFunc(t)
+	} else {
+		delay = o.delay
+	}
+	runat := time.Now().Add(delay)
+
 	k.outcome <- msg{
-		tid: tid,
+		tid: t.ID,
 		upd: &UpdateSet{
-			Id:          tid,
+			Id:          t.ID,
 			Status:      o.status,
 			Nice:        o.nice,
 			Runat:       &runat,
@@ -142,13 +164,13 @@ func toOpts(o *Opts, opts ...Option) *Opts {
 	return o
 }
 
-func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
+func (k *Kharon) Ack(ctx context.Context, t *Ticket, opts ...Option) error {
 	o := toOpts(&Opts{keep: false, status: &status.Done, delay: InfinityDelay}, opts...)
 	var err error
 	if o.keep {
-		err = k.save(ctx, tid, o)
+		err = k.save(ctx, t, o)
 	} else {
-		err = k.delete(ctx, tid)
+		err = k.delete(ctx, t.ID)
 	}
 	if err != nil {
 		return err
@@ -159,9 +181,9 @@ func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
 
 // Done marks a ticket as successfully completed.
 // It automatically adds the WithKeep option to retain the ticket in the store.
-func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
+func (k *Kharon) Done(ctx context.Context, t *Ticket, opts ...Option) error {
 	o := toOpts(&Opts{keep: true, status: &status.Done, delay: InfinityDelay}, opts...)
-	if err := k.save(ctx, tid, o); err != nil {
+	if err := k.save(ctx, t, o); err != nil {
 		return err
 	}
 	k.stats.done.value.Add(1)
@@ -169,13 +191,13 @@ func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
 }
 
 // Cancel marks a ticket as cancelled.
-func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error {
+func (k *Kharon) Cancel(ctx context.Context, t *Ticket, opts ...Option) error {
 	o := toOpts(&Opts{keep: false, status: &status.Cancelled, delay: InfinityDelay}, opts...)
 	var err error
 	if o.keep {
-		err = k.save(ctx, tid, o)
+		err = k.save(ctx, t, o)
 	} else {
-		err = k.delete(ctx, tid)
+		err = k.delete(ctx, t.ID)
 	}
 	if err != nil {
 		return err
@@ -185,9 +207,9 @@ func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error
 }
 
 // Fail marks a ticket as failed.
-func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
+func (k *Kharon) Fail(ctx context.Context, t *Ticket, opts ...Option) error {
 	o := toOpts(&Opts{keep: true, status: &status.Failed, delay: InfinityDelay}, opts...)
-	if err := k.save(ctx, tid, o); err != nil {
+	if err := k.save(ctx, t, o); err != nil {
 		return err
 	}
 	k.stats.failed.value.Add(1)
@@ -195,10 +217,10 @@ func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
 }
 
 // Retry schedules a ticket for retry with updated parameters.
-func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error {
+func (k *Kharon) Retry(ctx context.Context, t *Ticket, opts ...Option) error {
 	o := toOpts(&Opts{keep: true}, opts...)
 	// do not update status, it should be already 'pending'
-	if err := k.save(ctx, tid, o); err != nil {
+	if err := k.save(ctx, t, o); err != nil {
 		return err
 	}
 	k.stats.retried.value.Add(1)
