@@ -1,10 +1,15 @@
 package lymbo
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Settings contains configuration options for Kharon.
 type Settings struct {
 	// processTime is the time-to-run for tickets (prevents re-polling during processing).
+	// during processTime the ticket is effectively blocked in "pending" state (rescheduled)
+	// during this time ticket is protected from double processing
 	processTime time.Duration
 
 	// maxBackoffDelay is the maximum delay between retry attempts.
@@ -39,21 +44,29 @@ type Settings struct {
 
 	// shutdownFlushTimeout is the timeout for flushing remaining batch on shutdown.
 	shutdownFlushTimeout time.Duration
+
+	// flushInterval is the interval for flushing batches to the store.
+	flushInterval time.Duration
+
+	// tubes
+	tubes []Tube
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults.
 func DefaultSettings() *Settings {
 	return &Settings{
-		processTime:        30 * time.Second,
-		maxReactionDelay:   MaxPollIntervalDefault,
-		minReactionDelay:   MinPollIntervalDefault,
-		maxBackoffDelay:    MaxBackoffDelay,
-		backoffBase:        DefaultBackoffBase,
-		batchSize:          10,
-		workers:            4,
-		enableExpiration:   true,
-		expirationInterval: ExpirationInterval,
-		shutdownFlushTimeout:  5 * time.Second,
+		processTime:          30 * time.Second,
+		maxReactionDelay:     MaxPollIntervalDefault,
+		minReactionDelay:     MinPollIntervalDefault,
+		maxBackoffDelay:      MaxBackoffDelay,
+		backoffBase:          DefaultBackoffBase,
+		batchSize:            4,
+		workers:              4,
+		enableExpiration:     true,
+		expirationInterval:   ExpirationInterval,
+		shutdownFlushTimeout: 5 * time.Second,
+		flushInterval:        100 * time.Millisecond,
+		tubes:                nil, // nil means only Default tube
 	}
 }
 
@@ -110,6 +123,19 @@ func (s *Settings) WithShutdownFlushTimeout(d time.Duration) *Settings {
 	return s
 }
 
+// WithFlushInterval sets the interval for flushing batches to the store.
+func (s *Settings) WithFlushInterval(d time.Duration) *Settings {
+	s.flushInterval = d
+	return s
+}
+
+// WithTubes sets the tubes for Kharon to work with.
+// If no tubes are provided, it defaults to the "default" tube.
+func (s *Settings) WithOnlyTubes(tubes ...Tube) *Settings {
+	s.tubes = slices.Compact(tubes)
+	return s
+}
+
 // normalize applies defaults and constraints to the settings.
 func (s *Settings) normalize() {
 	if s.workers <= 0 {
@@ -132,5 +158,8 @@ func (s *Settings) normalize() {
 	}
 	if s.backoffBase <= 0 {
 		s.backoffBase = DefaultBackoffBase
+	}
+	if s.flushInterval <= 0 {
+		s.flushInterval = 100 * time.Millisecond
 	}
 }

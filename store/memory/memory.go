@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -91,6 +92,9 @@ func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
 	if us.ErrorReason != nil {
 		t.ErrorReason = us.ErrorReason
 	}
+	if us.Tube != nil {
+		t.Tube = *us.Tube
+	}
 }
 
 func (m *Store) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) error {
@@ -134,10 +138,21 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 		return lymbo.PollResult{}, lymbo.ErrLimitInvalid
 	}
 
+	tubes := make([]string, 0, len(req.RequestTubes))
+
+	if len(req.RequestTubes) == 0 {
+		tubes = []string{"default"}
+	} else {
+		for _, t := range req.RequestTubes {
+			tubes = append(tubes, t.String())
+		}
+		slices.Sort(tubes)
+		tubes = slices.Compact(tubes)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var closest *time.Time
 	var ready []lymbo.Ticket
 
 	for _, t := range m.data {
@@ -146,10 +161,10 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 		}
 
 		if t.Runat.After(req.Now) {
-			if closest == nil || t.Runat.Before(*closest) {
-				runat := t.Runat
-				closest = &runat
-			}
+			continue
+		}
+
+		if _, found := slices.BinarySearch(tubes, t.Tube.String()); !found {
 			continue
 		}
 
@@ -157,10 +172,7 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 	}
 
 	if len(ready) == 0 {
-		return lymbo.PollResult{
-			Tickets:    nil,
-			SleepUntil: closest,
-		}, nil
+		return lymbo.PollResult{Tickets: nil}, nil
 	}
 
 	// Sort by runat time, then by priority (nice value).
@@ -184,8 +196,7 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 	}
 
 	return lymbo.PollResult{
-		Tickets:    ready,
-		SleepUntil: nil,
+		Tickets: ready,
 	}, nil
 }
 

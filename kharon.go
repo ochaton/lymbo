@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ochaton/lymbo/status"
+	"golang.org/x/time/rate"
 )
 
 // Default configuration values.
@@ -23,7 +24,7 @@ const (
 	ExpirationBatchSize = 1000
 
 	// ExpirationInterval is how often to run the expiration worker.
-	ExpirationInterval = 100 * time.Millisecond
+	ExpirationInterval = MaxPollIntervalDefault
 )
 
 const (
@@ -110,6 +111,12 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 	if o.payload != nil {
 		t.Payload = o.payload
 	}
+	if o.resetAttempts {
+		t.Attempts = 0
+	}
+	if o.transferTube != nil {
+		t.Tube = *o.transferTube
+	}
 	if o.update != nil {
 		if err := o.update(ctx, t); err != nil {
 			return err
@@ -127,6 +134,7 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
 
 	us := &UpdateSet{
 		Id:          tid,
+		Tube:        o.transferTube,
 		Status:      o.status,
 		Nice:        o.nice,
 		Payload:     o.payload,
@@ -164,16 +172,20 @@ func (k *Kharon) delete(_ context.Context, tid TicketId) error {
 	return nil
 }
 
-func toOpts(o *Opts, opts ...Option) *Opts {
+func toOpts(o *Opts, opts ...Option) (*Opts, error) {
 	for _, opt := range opts {
-		opt(o)
+		if err := opt(o); err != nil {
+			return nil, err
+		}
 	}
-	return o
+	return o, nil
 }
 
 func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(&Opts{keep: false, status: &status.Done, delay: InfinityDelay}, opts...)
-	var err error
+	o, err := toOpts(&Opts{keep: false, status: &status.Done, delay: InfinityDelay}, opts...)
+	if err != nil {
+		return err
+	}
 	if o.keep {
 		err = k.save(ctx, tid, o)
 	} else {
@@ -182,25 +194,30 @@ func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	k.stats.acked.value.Add(1)
+	k.stats.acked.Add(1)
 	return nil
 }
 
 // Done marks a ticket as successfully completed.
 // It automatically adds the WithKeep option to retain the ticket in the store.
 func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(&Opts{keep: true, status: &status.Done, delay: InfinityDelay}, opts...)
+	o, err := toOpts(&Opts{keep: true, status: &status.Done, delay: InfinityDelay}, opts...)
+	if err != nil {
+		return err
+	}
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.done.value.Add(1)
+	k.stats.done.Add(1)
 	return nil
 }
 
 // Cancel marks a ticket as cancelled.
 func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(&Opts{keep: false, status: &status.Cancelled, delay: InfinityDelay}, opts...)
-	var err error
+	o, err := toOpts(&Opts{keep: false, status: &status.Cancelled, delay: InfinityDelay}, opts...)
+	if err != nil {
+		return err
+	}
 	if o.keep {
 		err = k.save(ctx, tid, o)
 	} else {
@@ -209,41 +226,63 @@ func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error
 	if err != nil {
 		return err
 	}
-	k.stats.canceled.value.Add(1)
+	k.stats.canceled.Add(1)
 	return nil
 }
 
 // Fail marks a ticket as failed.
 func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(&Opts{keep: true, status: &status.Failed, delay: InfinityDelay}, opts...)
+	o, err := toOpts(&Opts{keep: true, status: &status.Failed, delay: InfinityDelay}, opts...)
+	if err != nil {
+		return err
+	}
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.failed.value.Add(1)
+	k.stats.failed.Add(1)
+	return nil
+}
+
+// Restart schedules a ticket for immediate retry by setting its status to pending and runat to now.
+func (k *Kharon) Restart(ctx context.Context, tid TicketId, opts ...Option) error {
+	o, err := toOpts(&Opts{keep: true, status: &status.Pending, delay: FixedDelay(0), resetAttempts: true}, opts...)
+	if err != nil {
+		return err
+	}
+	if err := k.save(ctx, tid, o); err != nil {
+		return err
+	}
+	k.stats.scheduled.Add(1)
 	return nil
 }
 
 // Retry schedules a ticket for retry with updated parameters.
 func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error {
-	o := toOpts(&Opts{keep: true}, opts...)
+	o, err := toOpts(&Opts{keep: true}, opts...)
+	if err != nil {
+		return err
+	}
 	// do not update status, it should be already 'pending'
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.retried.value.Add(1)
+	k.stats.retried.Add(1)
 	return nil
 }
 
 // Put adds a new ticket to the store with configured options.
 func (k *Kharon) Put(ctx context.Context, t Ticket, opts ...Option) error {
-	o := toOpts(&Opts{keep: true, status: &status.Pending}, opts...)
+	o, err := toOpts(&Opts{keep: true, status: &status.Pending}, opts...)
+	if err != nil {
+		return err
+	}
 	if err := beforeUpdate(ctx, &t, o); err != nil {
 		return err
 	}
 	if err := k.store.Put(ctx, t); err != nil {
 		return err
 	}
-	k.stats.added.value.Add(1)
+	k.stats.added.Add(1)
 	return nil
 }
 
@@ -252,7 +291,7 @@ func (k *Kharon) Delete(ctx context.Context, tid TicketId) error {
 	if err := k.store.Delete(ctx, tid); err != nil {
 		return err
 	}
-	k.stats.deleted.value.Add(1)
+	k.stats.deleted.Add(1)
 	return nil
 }
 
@@ -262,20 +301,7 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 }
 
 func (k *Kharon) Stats() Stats {
-	return Stats{
-		Added:          k.stats.added.value.Load(),
-		Polled:         k.stats.polled.value.Load(),
-		Scheduled:      k.stats.scheduled.value.Load(),
-		Acked:          k.stats.acked.value.Load(),
-		Failed:         k.stats.failed.value.Load(),
-		Done:           k.stats.done.value.Load(),
-		Retried:        k.stats.retried.value.Load(),
-		Canceled:       k.stats.canceled.value.Load(),
-		Deleted:        k.stats.deleted.value.Load(),
-		Expired:        k.stats.expired.value.Load(),
-		Processed:      k.stats.processed.value.Load(),
-		RunningWorkers: k.stats.runningWorkers.value.Load(),
-	}
+	return k.stats.Snapshot()
 }
 
 // Run starts the Kharon job processing system with the given context and router.
@@ -288,22 +314,16 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 	var wg sync.WaitGroup
 
 	// Start pusher
-	wg.Add(1)
-	go k.runPusher(ctx, &wg)
+	wg.Go(func() { k.runPusher(ctx) })
 
 	// Start workers
 	for i := 0; i < k.settings.workers; i++ {
-		wg.Add(1)
-		go k.runWorker(ctx, r, &wg)
+		wg.Go(func() { k.runWorker(ctx, r) })
 	}
 
 	// Start expiration worker
 	if k.settings.enableExpiration {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			k.runExpirationWorker(ctx)
-		}()
+		wg.Go(func() { k.runExpirationWorker(ctx) })
 	}
 
 	k.logger.InfoContext(ctx, "kharon started",
@@ -326,10 +346,9 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 
 // runWorker processes tickets from income channel.
 // Exits when ctx is cancelled.
-func (k *Kharon) runWorker(ctx context.Context, r *Router, wg *sync.WaitGroup) {
-	k.stats.runningWorkers.value.Add(1)
-	defer wg.Done()
-	defer k.stats.runningWorkers.value.Add(-1)
+func (k *Kharon) runWorker(ctx context.Context, r *Router) {
+	k.stats.runningWorkers.Add(1)
+	defer k.stats.runningWorkers.Add(-1)
 	defer k.logger.DebugContext(ctx, "worker exiting")
 
 	for {
@@ -338,28 +357,27 @@ func (k *Kharon) runWorker(ctx context.Context, r *Router, wg *sync.WaitGroup) {
 			return
 		case t := <-k.income:
 			k.processTicket(ctx, r, t)
-			k.stats.processed.value.Add(1)
+			k.stats.processed.Add(1)
 		}
 	}
 }
 
 // runPusher batches and persists updates from outcome channel.
 // Exits when ctx is cancelled, flushing any remaining batch.
-func (k *Kharon) runPusher(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (k *Kharon) runPusher(ctx context.Context) {
 	defer k.logger.DebugContext(ctx, "pusher exiting")
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(k.settings.flushInterval)
 	defer ticker.Stop()
 
 	// Track in-flight async flush goroutines
-	var flushWg sync.WaitGroup
+	flushWg := &sync.WaitGroup{}
 	defer flushWg.Wait()
 
 	batch := make([]msg, 0, k.settings.workers*2)
 
-	// asyncFlush sends batch to store asynchronously (non-blocking)
-	asyncFlush := func() {
+	// flush sends batch to the store
+	flush := func(ctx context.Context, await ...bool) {
 		if len(batch) == 0 {
 			return
 		}
@@ -375,10 +393,7 @@ func (k *Kharon) runPusher(ctx context.Context, wg *sync.WaitGroup) {
 			}
 		}
 		batch = batch[:0]
-
-		flushWg.Add(1)
-		go func() {
-			defer flushWg.Done()
+		doflush := func() {
 			// Use independent context to ensure flush completes even if parent ctx is cancelled
 			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), k.settings.shutdownFlushTimeout)
 			defer cancel()
@@ -393,36 +408,12 @@ func (k *Kharon) runPusher(ctx context.Context, wg *sync.WaitGroup) {
 					k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
 				}
 			}
-		}()
-	}
-
-	// syncFlush sends batch to store synchronously (for shutdown)
-	syncFlush := func(flushCtx context.Context) {
-		if len(batch) == 0 {
-			return
 		}
 
-		delIds := make([]TicketId, 0, len(batch))
-		upds := make([]UpdateSet, 0, len(batch))
-
-		for _, m := range batch {
-			if m.upd == nil {
-				delIds = append(delIds, m.tid)
-			} else {
-				upds = append(upds, *m.upd)
-			}
-		}
-		batch = batch[:0]
-
-		if len(delIds) > 0 {
-			if err := k.store.DeleteBatch(flushCtx, delIds); err != nil {
-				k.logger.ErrorContext(flushCtx, "error deleting batch", "error", err)
-			}
-		}
-		if len(upds) > 0 {
-			if err := k.store.UpdateBatch(flushCtx, upds); err != nil {
-				k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
-			}
+		if len(await) > 0 && await[0] {
+			doflush()
+		} else {
+			flushWg.Go(doflush)
 		}
 	}
 
@@ -431,16 +422,16 @@ func (k *Kharon) runPusher(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			// Final sync flush with fresh context
 			flushCtx, cancel := context.WithTimeout(context.Background(), k.settings.shutdownFlushTimeout)
-			syncFlush(flushCtx)
+			flush(flushCtx, true)
 			cancel()
 			return
 		case m := <-k.outcome:
 			batch = append(batch, m)
 			if len(batch) >= cap(batch) {
-				asyncFlush()
+				flush(ctx)
 			}
 		case <-ticker.C:
-			asyncFlush()
+			flush(ctx)
 		}
 	}
 }
@@ -455,15 +446,19 @@ func (k *Kharon) runPoller(ctx context.Context) error {
 	defer timer.Stop()
 
 	for {
+		// run first
+		sleepDuration = k.poll(ctx)
+		if sleepDuration == 0 {
+			return ctx.Err()
+		}
+		// then think
+		k.logger.InfoContext(ctx, "poll sleeping", slog.Time("till", time.Now().Add(sleepDuration)))
+		timer.Reset(sleepDuration)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			sleepDuration = k.poll(ctx)
-			if sleepDuration == 0 {
-				return ctx.Err()
-			}
-			timer.Reset(sleepDuration)
 		}
 	}
 }
@@ -471,11 +466,41 @@ func (k *Kharon) runPoller(ctx context.Context) error {
 // poll executes one polling cycle and returns the next sleep duration.
 // Returns 0 if ctx is cancelled.
 func (k *Kharon) poll(ctx context.Context) time.Duration {
+	lim := rate.NewLimiter(rate.Every(k.settings.minReactionDelay), 1)
+	slowdown := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return 0
 		default:
+			if slowdown == 0 {
+				break
+			}
+
+			mx := k.settings.maxReactionDelay.Seconds()
+			mn := k.settings.minReactionDelay.Seconds()
+
+			// sensetivity
+			sense := float64(100)
+			// [ 1 - 2^-x ] --> the goal is to have a formula,
+			// which for x=0 gives minReactionDelay,
+			// and for x=inf+ gives maxReactionDelay
+			// but not linear.
+			sleep := mn + (mx-mn)*(1-math.Exp2(-float64(slowdown)/sense))
+			dur := time.Duration(sleep * float64(time.Second))
+			k.logger.DebugContext(ctx,
+				"slowdown", slog.Int("slowdown", slowdown),
+				"dur", slog.Duration("dur", dur),
+			)
+			time.Sleep(dur)
+		}
+
+		// We shall pace PollPending
+		// this will flatten the load to Postgres
+		if slowdown == 0 {
+			if err := lim.Wait(ctx); err != nil {
+				return 0
+			}
 		}
 
 		result, err := k.store.PollPending(ctx, PollRequest{
@@ -484,6 +509,7 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			TTR:             k.settings.processTime,
 			BackoffBase:     k.settings.backoffBase,
 			MaxBackoffDelay: k.settings.maxBackoffDelay,
+			RequestTubes:    k.settings.tubes,
 		})
 
 		if err != nil {
@@ -491,23 +517,30 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			return k.settings.maxReactionDelay
 		}
 
-		if result.SleepUntil != nil {
-			d := time.Until(*result.SleepUntil)
-			d = min(d, k.settings.maxReactionDelay)
-			d = max(d, k.settings.minReactionDelay)
-			return d
+		resultSize := len(result.Tickets)
+		if resultSize == 0 {
+			// no tickets => no work
+			// slow down
+			slowdown++
+			continue
 		}
 
-		if len(result.Tickets) == 0 {
-			return k.settings.maxReactionDelay
+		// As soon as some tickets received, speedup
+		if slowdown > 0 {
+			slowdown--
+			if resultSize == k.settings.batchSize {
+				// if resultSize == requestedSize
+				// go full-speed
+				slowdown = 0
+			}
 		}
 
-		k.stats.polled.value.Add(int64(len(result.Tickets)))
+		k.stats.polled.Add(int64(len(result.Tickets)))
 
 		for _, t := range result.Tickets {
 			select {
 			case k.income <- &t:
-				k.stats.scheduled.value.Add(1)
+				k.stats.scheduled.Add(1)
 			case <-ctx.Done():
 				return 0
 			}
@@ -531,7 +564,7 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 			if n, err := k.store.ExpireTickets(ctx, ExpirationBatchSize, time.Now()); err != nil {
 				k.logger.ErrorContext(ctx, "error expiring tickets", "error", err)
 			} else if n > 0 {
-				k.stats.expired.value.Add(n)
+				k.stats.expired.Add(n)
 				k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", n)
 			}
 		}

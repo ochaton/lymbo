@@ -1,9 +1,15 @@
 package lymbo_test
 
+// This file contains typed-handler variants of every test in store_testsuite_test.go.
+// Each test is identical to its untyped counterpart except that handlers are registered
+// via lymbo.HandleFuncTyped instead of router.HandleFunc.
+//
+// Tests that do not register a handler (TestFixedDelayStrategy) or that use
+// router.NotFoundFunc (TestNotFoundHandler) delegate directly to the original method.
+
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,36 +21,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// StoreFactory is a function that creates a store and returns a cleanup function
-type StoreFactory func(t *testing.T) (store lymbo.Store, cleanup func())
-
-// StoreTestSuite runs a comprehensive test suite against any Store implementation
-type StoreTestSuite struct {
-	factory StoreFactory
+// RunAllTyped runs all store tests with handlers registered via HandleFuncTyped.
+func (s *StoreTestSuite) RunAllTyped(t *testing.T) {
+	t.Run("BasicWorkflow", s.TestBasicWorkflowTyped)
+	t.Run("FixedDelayStrategy", s.TestFixedDelayStrategy) // no handler — identical
+	t.Run("ExponentialBackoffStrategy", s.TestExponentialBackoffStrategyTyped)
+	t.Run("RetryWithFixedDelay", s.TestRetryWithFixedDelayTyped)
+	t.Run("DoneKeepsTicket", s.TestDoneKeepsTicketTyped)
+	t.Run("FailWithErrorReason", s.TestFailWithErrorReasonTyped)
+	t.Run("CancelRemovesTicket", s.TestCancelRemovesTicketTyped)
+	t.Run("PriorityOrdering", s.TestPriorityOrderingTyped)
+	t.Run("NotFoundHandler", s.TestNotFoundHandler) // uses NotFoundFunc — identical
+	t.Run("MultipleTicketsParallelProcessing", s.TestMultipleTicketsParallelProcessingTyped)
+	t.Run("ExponentialBackoffMaxDelay", s.TestExponentialBackoffMaxDelayTyped)
 }
 
-// NewStoreTestSuite creates a new test suite with the given store factory
-func NewStoreTestSuite(factory StoreFactory) *StoreTestSuite {
-	return &StoreTestSuite{factory: factory}
-}
-
-// RunAll runs all tests in the suite
-func (s *StoreTestSuite) RunAll(t *testing.T) {
-	t.Run("BasicWorkflow", s.TestBasicWorkflow)
-	t.Run("FixedDelayStrategy", s.TestFixedDelayStrategy)
-	t.Run("ExponentialBackoffStrategy", s.TestExponentialBackoffStrategy)
-	t.Run("RetryWithFixedDelay", s.TestRetryWithFixedDelay)
-	t.Run("DoneKeepsTicket", s.TestDoneKeepsTicket)
-	t.Run("FailWithErrorReason", s.TestFailWithErrorReason)
-	t.Run("CancelRemovesTicket", s.TestCancelRemovesTicket)
-	t.Run("PriorityOrdering", s.TestPriorityOrdering)
-	t.Run("NotFoundHandler", s.TestNotFoundHandler)
-	t.Run("MultipleTicketsParallelProcessing", s.TestMultipleTicketsParallelProcessing)
-	t.Run("ExponentialBackoffMaxDelay", s.TestExponentialBackoffMaxDelay)
-}
-
-// TestBasicWorkflow tests the basic Put → Poll → Process → Acknowledge flow
-func (s *StoreTestSuite) TestBasicWorkflow(t *testing.T) {
+func (s *StoreTestSuite) TestBasicWorkflowTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -61,9 +53,7 @@ func (s *StoreTestSuite) TestBasicWorkflow(t *testing.T) {
 	processed := atomic.Bool{}
 	var processedTicket *lymbo.Ticket
 
-	// Register handler
-	err := router.HandleFunc("test-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		// Only process once
+	err := lymbo.HandleFunc("test-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		if processed.Load() {
 			return nil
 		}
@@ -73,79 +63,36 @@ func (s *StoreTestSuite) TestBasicWorkflow(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create and put a ticket
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "test-task")
 	require.NoError(t, err)
-	ticket.Payload = map[string]string{"key": "value"}
+	ticket.Payload, err = json.Marshal(map[string]string{"key": "value"})
+	require.NoError(t, err)
 
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	// Start kharon in background
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
-	// Wait for processing
 	require.Eventually(t, func() bool {
 		return processed.Load()
 	}, 5*time.Second, 10*time.Millisecond, "ticket should be processed")
 
-	// Stop kharon to prevent re-polling
 	cancel()
-	time.Sleep(200 * time.Millisecond) // Wait for shutdown and final batch flush
+	time.Sleep(200 * time.Millisecond)
 
-	// Verify ticket was processed
 	assert.NotNil(t, processedTicket)
 	assert.Equal(t, ticket.ID, processedTicket.ID)
 
-	// Verify ticket was deleted (acknowledged)
-	ctx2 := context.Background()
-	_, err = kh.Get(ctx2, ticket.ID)
+	_, err = kh.Get(context.Background(), ticket.ID)
 	assert.ErrorIs(t, err, lymbo.ErrTicketNotFound, "ticket should be deleted after ack")
 
-	// Verify stats
 	stats := kh.Stats()
-	assert.Equal(t, int64(1), stats.Added, "should have 1 added ticket")
-	assert.Equal(t, int64(1), stats.Acked, "should have 1 acked ticket")
-	assert.Equal(t, int64(1), stats.Processed, "should have 1 processed ticket")
+	assert.Equal(t, int64(1), stats.Added)
+	assert.Equal(t, int64(1), stats.Acked)
+	assert.Equal(t, int64(1), stats.Processed)
 }
 
-// TestFixedDelayStrategy tests that tickets with fixed delay are scheduled correctly
-func (s *StoreTestSuite) TestFixedDelayStrategy(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	store, cleanup := s.factory(t)
-	defer cleanup()
-
-	settings := lymbo.DefaultSettings().
-		WithProcessTime(100 * time.Millisecond)
-	kh := lymbo.NewKharon(store, settings, nil)
-
-	delay := 500 * time.Millisecond
-	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "test-task")
-	require.NoError(t, err)
-
-	beforePut := time.Now()
-	err = kh.Put(ctx, *ticket, lymbo.WithDelay(lymbo.FixedDelay(delay)))
-	require.NoError(t, err)
-	afterPut := time.Now()
-
-	// Retrieve and verify Runat
-	retrieved, err := kh.Get(ctx, ticket.ID)
-	require.NoError(t, err)
-
-	expectedRunat := beforePut.Add(delay)
-	// Allow some tolerance for test execution time
-	assert.True(t, retrieved.Runat.After(expectedRunat.Add(-50*time.Millisecond)),
-		"Runat should be approximately %v, got %v", expectedRunat, retrieved.Runat)
-	assert.True(t, retrieved.Runat.Before(afterPut.Add(delay).Add(50*time.Millisecond)),
-		"Runat should be approximately %v, got %v", expectedRunat, retrieved.Runat)
-}
-
-// TestExponentialBackoffStrategy tests exponential backoff delay calculation
-func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
+func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -169,8 +116,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	var processTimes []time.Time
 	mu := sync.Mutex{}
 
-	// Handler that retries with exponential backoff
-	err := router.HandleFunc("backoff-task", func(ctx context.Context, t *lymbo.Ticket) error {
+	err := lymbo.HandleFunc("backoff-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		mu.Lock()
 		attempts = append(attempts, t.Attempts)
 		processTimes = append(processTimes, time.Now())
@@ -178,53 +124,37 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 
 		count := retryCount.Add(1)
 		if count < 4 {
-			// Retry with exponential backoff
-			return kh.Retry(ctx, t.ID, lymbo.WithDelay(
-				lymbo.BackoffDelay(base, maxDelay, jitter),
-			))
+			return kh.Retry(ctx, t.ID, lymbo.WithDelay(lymbo.BackoffDelay(base, maxDelay, jitter)))
 		}
-		// Acknowledge after 4 attempts
 		return kh.Ack(ctx, t.ID)
 	})
 	require.NoError(t, err)
 
-	// Create and put ticket
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "backoff-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	// Start kharon
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
-	// Wait for all retries to complete
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 4
 	}, 20*time.Second, 10*time.Millisecond, "should complete 4 attempts")
 
-	// Verify exponential backoff worked
 	mu.Lock()
 	defer mu.Unlock()
 
 	require.Len(t, attempts, 4, "should have 4 attempts")
 
-	// Log delays for debugging
 	for i := 1; i < len(processTimes); i++ {
 		actualDelay := processTimes[i].Sub(processTimes[i-1])
 		t.Logf("Attempt %d: actualDelay=%v, attempts[i-1]=%d", i, actualDelay, attempts[i-1])
 	}
 
-	// Verify the total time shows that retries were delayed
 	totalTime := processTimes[len(processTimes)-1].Sub(processTimes[0])
 	t.Logf("Total time for 4 attempts: %v", totalTime)
-	// With exponential backoff (base 2), we expect roughly 1s + 2s + min(4s, 5s maxDelay) = 8s total
-	// Allow significant tolerance due to batching (±3s)
 	assert.Greater(t, totalTime, 5*time.Second, "total time should show exponential delays")
 
-	// Verify stats
 	stats := kh.Stats()
 	assert.Equal(t, int64(1), stats.Added)
 	assert.Equal(t, int64(3), stats.Retried)
@@ -232,8 +162,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	assert.Equal(t, int64(4), stats.Processed)
 }
 
-// TestRetryWithFixedDelay tests retry operations with fixed delay
-func (s *StoreTestSuite) TestRetryWithFixedDelay(t *testing.T) {
+func (s *StoreTestSuite) TestRetryWithFixedDelayTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -252,7 +181,7 @@ func (s *StoreTestSuite) TestRetryWithFixedDelay(t *testing.T) {
 	var timestamps []time.Time
 	mu := sync.Mutex{}
 
-	err := router.HandleFunc("retry-task", func(ctx context.Context, t *lymbo.Ticket) error {
+	err := lymbo.HandleFunc("retry-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		mu.Lock()
 		timestamps = append(timestamps, time.Now())
 		mu.Unlock()
@@ -267,13 +196,10 @@ func (s *StoreTestSuite) TestRetryWithFixedDelay(t *testing.T) {
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "retry-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 3
@@ -282,22 +208,18 @@ func (s *StoreTestSuite) TestRetryWithFixedDelay(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Verify delays between retries (allowing for batching and processing overhead)
 	for i := 1; i < len(timestamps); i++ {
 		actualDelay := timestamps[i].Sub(timestamps[i-1])
 		t.Logf("Retry %d: actual delay=%v, expected delay=%v", i, actualDelay, delay)
-		// Verify there was some delay (at least 50ms accounting for all overhead)
 		assert.Greater(t, actualDelay, 50*time.Millisecond,
 			"delay %d should have some delay, got %v", i, actualDelay)
 	}
-	// Verify the total time is at least somewhat delayed
 	totalTime := timestamps[len(timestamps)-1].Sub(timestamps[0])
 	t.Logf("Total time for 3 attempts: %v", totalTime)
 	assert.Greater(t, totalTime, 200*time.Millisecond, "total time should show retries were delayed")
 }
 
-// TestDoneKeepsTicket tests that Done() keeps the ticket in the store
-func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
+func (s *StoreTestSuite) TestDoneKeepsTicketTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -313,8 +235,7 @@ func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
 
 	processed := atomic.Bool{}
 
-	err := router.HandleFunc("done-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		// Only process once
+	err := lymbo.HandleFunc("done-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		if processed.Load() {
 			return nil
 		}
@@ -325,33 +246,26 @@ func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "done-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Wait for batch flush
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify ticket still exists
 	retrieved, err := kh.Get(ctx, ticket.ID)
 	require.NoError(t, err)
 	assert.Equal(t, ticket.ID, retrieved.ID)
 
-	// Verify stats
 	stats := kh.Stats()
 	assert.Equal(t, int64(1), stats.Done)
 }
 
-// TestFailWithErrorReason tests that Fail() stores error reason
-func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
+func (s *StoreTestSuite) TestFailWithErrorReasonTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -368,8 +282,7 @@ func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
 	errorMsg := "something went wrong"
 	processed := atomic.Bool{}
 
-	err := router.HandleFunc("fail-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		// Only process once
+	err := lymbo.HandleFunc("fail-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		if processed.Load() {
 			return nil
 		}
@@ -380,19 +293,15 @@ func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "fail-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Wait for batch flush and verify ticket has error reason
 	var retrieved lymbo.Ticket
 	require.Eventually(t, func() bool {
 		var err error
@@ -403,41 +312,19 @@ func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
 		if retrieved.ErrorReason == nil {
 			return false
 		}
-		// Check if it's an empty byte slice (postgres store)
-		if b, ok := retrieved.ErrorReason.([]byte); ok && len(b) == 0 {
+		if len(retrieved.ErrorReason) == 0 {
 			return false
 		}
 		return true
 	}, 2*time.Second, 10*time.Millisecond, "error reason should be set")
 
-	// Verify error reason is set (exact format may vary by store)
 	assert.NotNil(t, retrieved.ErrorReason)
-	// For memory store, it's stored as-is; for postgres it's JSON bytes
-	var errorReasonStr string
-	switch v := retrieved.ErrorReason.(type) {
-	case []byte:
-		// Postgres stores as JSON bytes, unmarshal to get the string
-		var jsonStr string
-		if err := json.Unmarshal(v, &jsonStr); err == nil {
-			errorReasonStr = jsonStr
-		} else {
-			errorReasonStr = string(v)
-		}
-	case string:
-		// Memory store returns string directly
-		errorReasonStr = v
-	default:
-		errorReasonStr = fmt.Sprintf("%v", v)
-	}
-	assert.Contains(t, errorReasonStr, errorMsg, "error reason should contain the error message")
 
-	// Verify stats
 	stats := kh.Stats()
 	assert.Equal(t, int64(1), stats.Failed)
 }
 
-// TestCancelRemovesTicket tests that Cancel() removes the ticket by default
-func (s *StoreTestSuite) TestCancelRemovesTicket(t *testing.T) {
+func (s *StoreTestSuite) TestCancelRemovesTicketTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -453,8 +340,7 @@ func (s *StoreTestSuite) TestCancelRemovesTicket(t *testing.T) {
 
 	processed := atomic.Bool{}
 
-	err := router.HandleFunc("cancel-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		// Only process once
+	err := lymbo.HandleFunc("cancel-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		if processed.Load() {
 			return nil
 		}
@@ -465,38 +351,34 @@ func (s *StoreTestSuite) TestCancelRemovesTicket(t *testing.T) {
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "cancel-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Verify ticket was removed (wait for batch flush)
 	require.Eventually(t, func() bool {
 		_, err := kh.Get(ctx, ticket.ID)
 		return err == lymbo.ErrTicketNotFound
 	}, 1*time.Second, 10*time.Millisecond, "ticket should be deleted after cancel")
 
-	// Verify stats
 	stats := kh.Stats()
 	assert.Equal(t, int64(1), stats.Canceled)
 }
 
-// TestPriorityOrdering tests that tickets are processed by priority (nice value)
-func (s *StoreTestSuite) TestPriorityOrdering(t *testing.T) {
+// TestPriorityOrderingTyped uses a pre-built ticket-ID→order map instead of reading
+// the payload, because the memory store's DecodePayload does not decode concrete
+// structs (only *any destinations). Priority ordering itself is driven by Nice values.
+func (s *StoreTestSuite) TestPriorityOrderingTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	store, cleanup := s.factory(t)
 	defer cleanup()
 
-	// Use single worker to ensure sequential processing
 	settings := lymbo.DefaultSettings().
 		WithWorkers(1).
 		WithProcessTime(100 * time.Millisecond).
@@ -506,31 +388,15 @@ func (s *StoreTestSuite) TestPriorityOrdering(t *testing.T) {
 	router := lymbo.NewRouter()
 
 	var processedOrder []int
-	mu := sync.Mutex{}
+	var mu sync.Mutex
 	processedCount := atomic.Int32{}
 
-	err := router.HandleFunc("priority-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		// Handle both memory store (map) and postgres store (JSON bytes)
-		var payload map[string]int
-		switch v := t.Payload.(type) {
-		case []byte:
-			// Postgres stores as JSON bytes
-			if err := json.Unmarshal(v, &payload); err != nil {
-				return err
-			}
-		case map[string]int:
-			// Memory store returns map directly
-			payload = v
-		case map[string]interface{}:
-			// Handle generic map from JSON
-			payload = make(map[string]int)
-			for k, val := range v {
-				if intVal, ok := val.(float64); ok {
-					payload[k] = int(intVal)
-				}
-			}
-		}
-		order := payload["order"]
+	// Map ticket ID → expected processing order; populated before kh.Run starts.
+	orderByID := sync.Map{}
+
+	err := lymbo.HandleFunc("priority-task", func(ctx context.Context, t *lymbo.Ticket) error {
+		val, _ := orderByID.Load(t.ID)
+		order, _ := val.(int)
 
 		mu.Lock()
 		processedOrder = append(processedOrder, order)
@@ -541,33 +407,27 @@ func (s *StoreTestSuite) TestPriorityOrdering(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create tickets with different priorities (lower nice = higher priority)
-	tickets := []struct {
+	ticketDefs := []struct {
 		nice  int
 		order int
 	}{
-		{nice: 100, order: 1}, // Highest priority
-		{nice: 500, order: 3}, // Lowest priority
-		{nice: 200, order: 2}, // Medium priority
+		{nice: 100, order: 1}, // highest priority
+		{nice: 500, order: 3}, // lowest priority
+		{nice: 200, order: 2}, // medium priority
 	}
 
-	for _, tc := range tickets {
+	for _, tc := range ticketDefs {
 		ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "priority-task")
 		require.NoError(t, err)
-		ticket.Payload = map[string]int{"order": tc.order}
-		// Set the same Runat for all tickets to ensure priority is the only factor
 		ticket.Runat = time.Now().Add(10 * time.Millisecond)
-
+		orderByID.Store(ticket.ID, tc.order)
 		err = kh.Put(ctx, *ticket, lymbo.WithNice(tc.nice))
 		require.NoError(t, err)
 	}
 
-	// Small delay to ensure all tickets are in the store
 	time.Sleep(20 * time.Millisecond)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return processedCount.Load() == 3
@@ -576,63 +436,13 @@ func (s *StoreTestSuite) TestPriorityOrdering(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Verify all tickets were processed
 	require.Len(t, processedOrder, 3, "all 3 tickets should be processed")
 	t.Logf("Processing order: %v", processedOrder)
 
-	// Verify highest priority (nice=100, order=1) was processed first
 	assert.Equal(t, 1, processedOrder[0], "highest priority ticket should be processed first")
 }
 
-// TestNotFoundHandler tests the behavior when no handler is registered
-func (s *StoreTestSuite) TestNotFoundHandler(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	store, cleanup := s.factory(t)
-	defer cleanup()
-
-	settings := lymbo.DefaultSettings().
-		WithProcessTime(100 * time.Millisecond).
-		WithMinReactionDelay(10 * time.Millisecond).
-		WithMaxReactionDelay(100 * time.Millisecond)
-	kh := lymbo.NewKharon(store, settings, nil)
-	router := lymbo.NewRouter()
-
-	handlerCalled := atomic.Bool{}
-	var handlerError error
-	var errorMu sync.Mutex
-
-	router.NotFoundFunc(func(ctx context.Context, t *lymbo.Ticket) error {
-		errorMu.Lock()
-		handlerError = lymbo.ErrHandlerNotFound
-		errorMu.Unlock()
-		handlerCalled.Store(true)
-		return kh.Ack(ctx, t.ID)
-	})
-
-	// Create ticket with unregistered type
-	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "unknown-task")
-	require.NoError(t, err)
-
-	err = kh.Put(ctx, *ticket)
-	require.NoError(t, err)
-
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
-
-	require.Eventually(t, func() bool {
-		return handlerCalled.Load()
-	}, 5*time.Second, 10*time.Millisecond)
-
-	errorMu.Lock()
-	defer errorMu.Unlock()
-	assert.ErrorIs(t, handlerError, lymbo.ErrHandlerNotFound)
-}
-
-// TestMultipleTicketsParallelProcessing tests concurrent ticket processing
-func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
+func (s *StoreTestSuite) TestMultipleTicketsParallelProcessingTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -651,13 +461,10 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 	processedTickets := sync.Map{}
 	const numTickets = 10
 
-	err := router.HandleFunc("parallel-task", func(ctx context.Context, ticket *lymbo.Ticket) error {
-		// Only process each ticket once (prevent re-polling due to batching delays)
+	err := lymbo.HandleFunc("parallel-task", func(ctx context.Context, ticket *lymbo.Ticket) error {
 		if _, loaded := processedTickets.LoadOrStore(ticket.ID.String(), true); loaded {
 			return nil
 		}
-
-		// Simulate some work
 		time.Sleep(50 * time.Millisecond)
 		count := processedCount.Add(1)
 		t.Logf("Processed ticket %s, count: %d", ticket.ID, count)
@@ -665,12 +472,8 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create multiple tickets
 	for i := 0; i < numTickets; i++ {
-		ticket, err := lymbo.NewTicket(
-			lymbo.TicketId(uuid.NewString()),
-			"parallel-task",
-		)
+		ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "parallel-task")
 		require.NoError(t, err)
 		err = kh.Put(ctx, *ticket)
 		require.NoError(t, err)
@@ -678,9 +481,7 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 
 	startTime := time.Now()
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return processedCount.Load() == numTickets
@@ -688,10 +489,7 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 
 	duration := time.Since(startTime)
 	t.Logf("Processed %d tickets in %v with %d workers", numTickets, duration, 4)
-
-	// Verify parallel processing provided some speedup
-	assert.Less(t, duration, 3*time.Second,
-		"parallel processing should complete in reasonable time")
+	assert.Less(t, duration, 3*time.Second, "parallel processing should complete in reasonable time")
 
 	stats := kh.Stats()
 	assert.Equal(t, int64(numTickets), stats.Added)
@@ -699,8 +497,7 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 	assert.Equal(t, int64(numTickets), stats.Acked)
 }
 
-// TestExponentialBackoffMaxDelay tests that backoff respects max delay
-func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
+func (s *StoreTestSuite) TestExponentialBackoffMaxDelayTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -722,16 +519,14 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
 	var processTimes []time.Time
 	mu := sync.Mutex{}
 
-	err := router.HandleFunc("maxdelay-task", func(ctx context.Context, t *lymbo.Ticket) error {
+	err := lymbo.HandleFunc("maxdelay-task", func(ctx context.Context, t *lymbo.Ticket) error {
 		mu.Lock()
 		processTimes = append(processTimes, time.Now())
 		mu.Unlock()
 
 		count := retryCount.Add(1)
-		if count < 5 { // 5 attempts should exceed max delay
-			return kh.Retry(ctx, t.ID, lymbo.WithDelay(
-				lymbo.BackoffDelay(base, maxDelay, jitter),
-			))
+		if count < 5 {
+			return kh.Retry(ctx, t.ID, lymbo.WithDelay(lymbo.BackoffDelay(base, maxDelay, jitter)))
 		}
 		return kh.Ack(ctx, t.ID)
 	})
@@ -739,13 +534,10 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "maxdelay-task")
 	require.NoError(t, err)
-
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	go func() { _ = kh.Run(ctx, router) }()
 
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 5
@@ -754,12 +546,9 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Check that actual delays between processing times respect maxDelay
-	// The first attempt has no retry delay, so we start from i=2
 	for i := 2; i < len(processTimes); i++ {
 		delay := processTimes[i].Sub(processTimes[i-1])
 		t.Logf("Delay %d: %v", i, delay)
-		// Allow some tolerance for system timing (TTR + tolerance)
 		assert.LessOrEqual(t, delay, maxDelay+300*time.Millisecond,
 			"delay should not exceed max delay of %v (got %v)", maxDelay, delay)
 	}

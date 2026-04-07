@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,8 +101,8 @@ func (r *Tickets) Get(ctx context.Context, id lymbo.TicketId) (lymbo.Ticket, err
 		ctime       pgtype.Timestamptz
 		mtime       pgtype.Timestamptz
 		attempts    int32
-		payload     []byte
-		errorReason []byte
+		payload     json.RawMessage
+		errorReason json.RawMessage
 	)
 
 	err = r.db.QueryRow(ctx, r.queries.get, ticketUUID).Scan(
@@ -153,25 +154,13 @@ func (r *Tickets) Put(ctx context.Context, ticket lymbo.Ticket) error {
 		return lymbo.ErrTicketIDInvalid
 	}
 
-	var payload []byte
-	if ticket.Payload != nil {
-		payload, err = json.Marshal(ticket.Payload)
-		if err != nil {
-			return fmt.Errorf("failed to marshal payload: %w", err)
-		}
-	}
-
-	var errorReason []byte
-	if ticket.ErrorReason != nil {
-		errorReason, err = json.Marshal(ticket.ErrorReason)
-		if err != nil {
-			return fmt.Errorf("failed to marshal error_reason: %w", err)
-		}
-	}
-
 	var mtime pgtype.Timestamptz
 	if ticket.Mtime != nil {
 		mtime = pgtype.Timestamptz{Time: *ticket.Mtime, Valid: true}
+	}
+	tube := ticket.Tube.String()
+	if tube == "" {
+		tube = "default"
 	}
 
 	_, err = r.db.Exec(ctx, r.queries.put,
@@ -183,8 +172,9 @@ func (r *Tickets) Put(ctx context.Context, ticket lymbo.Ticket) error {
 		pgtype.Timestamptz{Time: ticket.Ctime, Valid: true},
 		mtime,
 		int32(ticket.Attempts),
-		payload,
-		errorReason,
+		ticket.Payload,
+		ticket.ErrorReason,
+		tube,
 	)
 	return err
 }
@@ -252,8 +242,8 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 		ctime       pgtype.Timestamptz
 		mtime       pgtype.Timestamptz
 		attempts    int32
-		payload     []byte
-		errorReason []byte
+		payload     json.RawMessage
+		errorReason json.RawMessage
 	)
 
 	err = tx.QueryRow(ctx, r.queries.get, ticketUUID).Scan(
@@ -302,22 +292,8 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 		return err
 	}
 
-	// Re-marshal payload and error_reason
-	var updatedPayload []byte
-	if ticket.Payload != nil {
-		updatedPayload, err = json.Marshal(ticket.Payload)
-		if err != nil {
-			return fmt.Errorf("failed to marshal payload: %w", err)
-		}
-	}
-
-	var updatedErrorReason []byte
-	if ticket.ErrorReason != nil {
-		updatedErrorReason, err = json.Marshal(ticket.ErrorReason)
-		if err != nil {
-			return fmt.Errorf("failed to marshal error_reason: %w", err)
-		}
-	}
+	updatedPayload := ticket.Payload
+	updatedErrorReason := ticket.ErrorReason
 
 	var updatedMtime pgtype.Timestamptz
 	if ticket.Mtime != nil {
@@ -394,11 +370,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) er
 		// payload as $5
 		switch {
 		case us.Payload != nil:
-			payload, err := json.Marshal(us.Payload)
-			if err != nil {
-				return fmt.Errorf("failed to marshal payload: %w", err)
-			}
-			req = append(req, payload)
+			req = append(req, us.Payload)
 		default:
 			req = append(req, nil)
 		}
@@ -406,11 +378,14 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) er
 		// error_reason as $6
 		switch {
 		case us.ErrorReason != nil:
-			errorReason, err := json.Marshal(us.ErrorReason)
-			if err != nil {
-				return fmt.Errorf("failed to marshal error_reason: %w", err)
-			}
-			req = append(req, errorReason)
+			req = append(req, us.ErrorReason)
+		default:
+			req = append(req, nil)
+		}
+
+		switch {
+		case us.Tube != nil:
+			req = append(req, string(*us.Tube))
 		default:
 			req = append(req, nil)
 		}
@@ -434,51 +409,88 @@ type pollPendingParams struct {
 	ttr         int32
 	maxDelay    int32
 	backoffBase float64
+	maxAttempts int32
 	limit       int32
+	tubes       []string
+}
+
+func clampMaxAttempts(maxDelay int32, backoffBase float64) int32 {
+	if backoffBase <= 1 {
+		return math.MaxInt32
+	}
+	return int32(math.Ceil(math.Log(float64(maxDelay)) / math.Log(backoffBase)))
+}
+
+func setTubes(tubes []lymbo.Tube) ([]string, error) {
+	if len(tubes) == 0 {
+		return []string{"default"}, nil
+	}
+	if len(tubes) > 10 {
+		return nil, fmt.Errorf("too many tubes requested: %d (max 10)", len(tubes))
+	}
+	result := make([]string, len(tubes))
+	for i, tube := range tubes {
+		if tube == "" {
+			return nil, fmt.Errorf("tube name cannot be empty (index %d)", i)
+		}
+		result[i] = string(tube)
+	}
+	return result, nil
 }
 
 func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo.PollResult, error) {
+	maxAttempts := clampMaxAttempts(int32(req.MaxBackoffDelay.Seconds()), req.BackoffBase)
+
 	dto := pollPendingParams{
 		now:         pgtype.Timestamptz{Valid: true, Time: req.Now},
 		ttr:         int32(req.TTR.Seconds()),
 		maxDelay:    int32(req.MaxBackoffDelay.Seconds()),
 		backoffBase: req.BackoffBase,
+		maxAttempts: maxAttempts,
 		limit:       int32(req.Limit),
 	}
+
+	var err error
+	dto.tubes, err = setTubes(req.RequestTubes)
+	if err != nil {
+		return lymbo.PollResult{}, err
+	}
+
 	rows, err := r.db.Query(ctx, r.queries.poll,
-		dto.now,
-		dto.ttr,
-		dto.maxDelay,
-		dto.backoffBase,
-		dto.limit,
+		dto.now,         // $1
+		dto.ttr,         // $2
+		dto.maxDelay,    // $3
+		dto.backoffBase, // $4
+		dto.maxAttempts, // $5
+		dto.limit,       // $6
+		dto.tubes,       // $7
 	)
 	if err != nil {
 		return lymbo.PollResult{}, err
 	}
 	defer rows.Close()
 
-	var sleepUntil *time.Time
-	tickets := make([]lymbo.Ticket, 0)
+	tickets := make([]lymbo.Ticket, 0, req.Limit)
 
 	for rows.Next() {
 		var (
-			rowType     string
 			id          uuid.UUID
 			statusStr   string
+			tube        string
 			runat       pgtype.Timestamptz
 			nice        int16
 			ticketType  string
 			ctime       pgtype.Timestamptz
 			mtime       pgtype.Timestamptz
 			attempts    int32
-			payload     []byte
-			errorReason []byte
+			payload     json.RawMessage
+			errorReason json.RawMessage
 		)
 
 		err := rows.Scan(
-			&rowType,
 			&id,
 			&statusStr,
+			&tube,
 			&runat,
 			&nice,
 			&ticketType,
@@ -492,34 +504,28 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 			return lymbo.PollResult{}, err
 		}
 
-		switch rowType {
-		case "ticket":
-			s, err := status.FromString(statusStr)
-			if err != nil {
-				slog.WarnContext(ctx, "failed to convert ticket in PollPending", "error", err, "ticket_id", id.String())
-				continue
-			}
-			var mtimePtr *time.Time
-			if mtime.Valid {
-				mtimePtr = &mtime.Time
-			}
-			tickets = append(tickets, lymbo.Ticket{
-				ID:          lymbo.TicketId(id.String()),
-				Status:      s,
-				Runat:       runat.Time,
-				Nice:        int(nice),
-				Type:        ticketType,
-				Ctime:       ctime.Time,
-				Mtime:       mtimePtr,
-				Attempts:    int(attempts),
-				Payload:     payload,
-				ErrorReason: errorReason,
-			})
-		case "future_ticket":
-			sleepUntil = &runat.Time
-		default:
-			slog.WarnContext(ctx, "unknown row type PollPending", "row_type", rowType, "ticket_id", id.String())
+		s, err := status.FromString(statusStr)
+		if err != nil {
+			slog.WarnContext(ctx, "failed to convert ticket in PollPending", "error", err, "ticket_id", id.String())
+			continue
 		}
+		var mtimePtr *time.Time
+		if mtime.Valid {
+			mtimePtr = &mtime.Time
+		}
+		tickets = append(tickets, lymbo.Ticket{
+			ID:          lymbo.TicketId(id.String()),
+			Status:      s,
+			Tube:        lymbo.Tube(tube),
+			Runat:       runat.Time,
+			Nice:        int(nice),
+			Type:        ticketType,
+			Ctime:       ctime.Time,
+			Mtime:       mtimePtr,
+			Attempts:    int(attempts),
+			Payload:     payload,
+			ErrorReason: errorReason,
+		})
 	}
 
 	if err := rows.Err(); err != nil {
@@ -527,8 +533,7 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 	}
 
 	return lymbo.PollResult{
-		SleepUntil: sleepUntil,
-		Tickets:    tickets,
+		Tickets: tickets,
 	}, nil
 }
 
