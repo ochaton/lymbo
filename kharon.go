@@ -360,17 +360,17 @@ func (k *Kharon) runWorker(ctx context.Context, r *Router) {
 func (k *Kharon) runPusher(ctx context.Context) {
 	defer k.logger.DebugContext(ctx, "pusher exiting")
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(k.settings.flushInterval)
 	defer ticker.Stop()
 
 	// Track in-flight async flush goroutines
-	var flushWg sync.WaitGroup
+	flushWg := &sync.WaitGroup{}
 	defer flushWg.Wait()
 
 	batch := make([]msg, 0, k.settings.workers*2)
 
-	// asyncFlush sends batch to store asynchronously (non-blocking)
-	asyncFlush := func() {
+	// flush sends batch to the store
+	flush := func(ctx context.Context, await ...bool) {
 		if len(batch) == 0 {
 			return
 		}
@@ -386,8 +386,7 @@ func (k *Kharon) runPusher(ctx context.Context) {
 			}
 		}
 		batch = batch[:0]
-
-		flushWg.Go(func() {
+		doflush := func() {
 			// Use independent context to ensure flush completes even if parent ctx is cancelled
 			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), k.settings.shutdownFlushTimeout)
 			defer cancel()
@@ -402,36 +401,12 @@ func (k *Kharon) runPusher(ctx context.Context) {
 					k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
 				}
 			}
-		})
-	}
-
-	// syncFlush sends batch to store synchronously (for shutdown)
-	syncFlush := func(flushCtx context.Context) {
-		if len(batch) == 0 {
-			return
 		}
 
-		delIds := make([]TicketId, 0, len(batch))
-		upds := make([]UpdateSet, 0, len(batch))
-
-		for _, m := range batch {
-			if m.upd == nil {
-				delIds = append(delIds, m.tid)
-			} else {
-				upds = append(upds, *m.upd)
-			}
-		}
-		batch = batch[:0]
-
-		if len(delIds) > 0 {
-			if err := k.store.DeleteBatch(flushCtx, delIds); err != nil {
-				k.logger.ErrorContext(flushCtx, "error deleting batch", "error", err)
-			}
-		}
-		if len(upds) > 0 {
-			if err := k.store.UpdateBatch(flushCtx, upds); err != nil {
-				k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
-			}
+		if len(await) > 0 && await[0] {
+			doflush()
+		} else {
+			flushWg.Go(doflush)
 		}
 	}
 
@@ -440,16 +415,16 @@ func (k *Kharon) runPusher(ctx context.Context) {
 		case <-ctx.Done():
 			// Final sync flush with fresh context
 			flushCtx, cancel := context.WithTimeout(context.Background(), k.settings.shutdownFlushTimeout)
-			syncFlush(flushCtx)
+			flush(flushCtx, true)
 			cancel()
 			return
 		case m := <-k.outcome:
 			batch = append(batch, m)
 			if len(batch) >= cap(batch) {
-				asyncFlush()
+				flush(ctx)
 			}
 		case <-ticker.C:
-			asyncFlush()
+			flush(ctx)
 		}
 	}
 }

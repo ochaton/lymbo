@@ -41,6 +41,9 @@ type Settings struct {
 
 	// shutdownFlushTimeout is the timeout for flushing remaining batch on shutdown.
 	shutdownFlushTimeout time.Duration
+
+	// flushInterval is the interval for flushing batches to the store.
+	flushInterval time.Duration
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults.
@@ -56,6 +59,7 @@ func DefaultSettings() *Settings {
 		enableExpiration:     true,
 		expirationInterval:   ExpirationInterval,
 		shutdownFlushTimeout: 5 * time.Second,
+		flushInterval:        100 * time.Millisecond,
 	}
 }
 
@@ -112,6 +116,12 @@ func (s *Settings) WithShutdownFlushTimeout(d time.Duration) *Settings {
 	return s
 }
 
+// WithFlushInterval sets the interval for flushing batches to the store.
+func (s *Settings) WithFlushInterval(d time.Duration) *Settings {
+	s.flushInterval = d
+	return s
+}
+
 // normalize applies defaults and constraints to the settings.
 func (s *Settings) normalize() {
 	if s.workers <= 0 {
@@ -134,5 +144,8 @@ func (s *Settings) normalize() {
 	}
 	if s.backoffBase <= 0 {
 		s.backoffBase = DefaultBackoffBase
+	}
+	if s.flushInterval <= 0 {
+		s.flushInterval = 100 * time.Millisecond
 	}
 }
