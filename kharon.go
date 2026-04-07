@@ -304,6 +304,11 @@ func (k *Kharon) Stats() Stats {
 	return k.stats.Snapshot()
 }
 
+// GetStatsByType returns ticket counts grouped by type and status.
+func (k *Kharon) GetStatsByType(ctx context.Context) ([]TypeStats, error) {
+	return k.store.GetStatsByType(ctx)
+}
+
 // Run starts the Kharon job processing system with the given context and router.
 // It spawns worker goroutines and begins polling for tickets to process.
 // Returns when ctx is cancelled or an error occurs.

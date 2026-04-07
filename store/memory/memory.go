@@ -226,3 +226,35 @@ func (m *Store) ExpireTickets(_ context.Context, limit int, now time.Time) (int6
 
 	return int64(count), nil
 }
+
+// GetStatsByType returns ticket counts grouped by type and status.
+func (m *Store) GetStatsByType(_ context.Context) ([]lymbo.TypeStats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	statsMap := make(map[string]*lymbo.TypeStats)
+	for _, t := range m.data {
+		s, ok := statsMap[t.Type]
+		if !ok {
+			s = &lymbo.TypeStats{Type: t.Type}
+			statsMap[t.Type] = s
+		}
+		switch t.Status {
+		case status.Pending:
+			s.Pending++
+		case status.Done:
+			s.Done++
+		case status.Failed:
+			s.Failed++
+		case status.Cancelled:
+			s.Cancelled++
+		}
+	}
+
+	result := make([]lymbo.TypeStats, 0, len(statsMap))
+	for _, s := range statsMap {
+		result = append(result, *s)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Type < result[j].Type })
+	return result, nil
+}

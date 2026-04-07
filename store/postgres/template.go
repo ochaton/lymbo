@@ -139,15 +139,27 @@ var expire = template.Must(template.New("expire").Parse(`-- name: ExpireTickets:
 DELETE FROM {{.TableName}}
 WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2);`))
 
+var statsByType = template.Must(template.New("statsByType").Parse(`
+SELECT
+	type,
+	COUNT(*) FILTER (WHERE status = 'pending') as pending,
+	COUNT(*) FILTER (WHERE status = 'done') as done,
+	COUNT(*) FILTER (WHERE status = 'failed') as failed,
+	COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+FROM {{.TableName}}
+GROUP BY type
+ORDER BY type`))
+
 type Queries struct {
-	migrate string
-	get     string
-	put     string
-	delete  string
-	update  string
-	backoff string
-	poll    string
-	expire  string
+	migrate     string
+	get         string
+	put         string
+	delete      string
+	update      string
+	backoff     string
+	poll        string
+	expire      string
+	statsByType string
 }
 
 func newQueries(tableName string) (*Queries, error) {
@@ -188,6 +200,9 @@ func newQueries(tableName string) (*Queries, error) {
 	}
 	if qt.backoff, err = exec(backoff); err != nil {
 		return nil, fmt.Errorf("failed to execute template `backoff`: %w", err)
+	}
+	if qt.statsByType, err = exec(statsByType); err != nil {
+		return nil, fmt.Errorf("failed to execute template `statsByType`: %w", err)
 	}
 	return qt, nil
 }

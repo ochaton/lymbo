@@ -547,3 +547,22 @@ func (r *Tickets) ExpireTickets(ctx context.Context, limit int, now time.Time) (
 	}
 	return res.RowsAffected(), nil
 }
+
+// GetStatsByType returns ticket counts grouped by type and status.
+func (r *Tickets) GetStatsByType(ctx context.Context) ([]lymbo.TypeStats, error) {
+	rows, err := r.db.Query(ctx, r.queries.statsByType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]lymbo.TypeStats, 0)
+	for rows.Next() {
+		var s lymbo.TypeStats
+		if err := rows.Scan(&s.Type, &s.Pending, &s.Done, &s.Failed, &s.Cancelled); err != nil {
+			return nil, err
+		}
+		stats = append(stats, s)
+	}
+	return stats, rows.Err()
+}
