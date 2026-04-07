@@ -6,6 +6,18 @@ type counter struct {
 	value atomic.Int64
 }
 
+func (c *counter) Inc() {
+	c.value.Add(1)
+}
+
+func (c *counter) Add(n int64) {
+	c.value.Add(n)
+}
+
+func (c *counter) Get() int64 {
+	return c.value.Load()
+}
+
 type stats struct {
 	added          *counter
 	polled         *counter
@@ -19,6 +31,23 @@ type stats struct {
 	expired        *counter
 	processed      *counter
 	runningWorkers *counter
+}
+
+func (s *stats) Snapshot() Stats {
+	return Stats{
+		Added:          s.added.Get(),
+		Polled:         s.polled.Get(),
+		Scheduled:      s.scheduled.Get(),
+		Acked:          s.acked.Get(),
+		Failed:         s.failed.Get(),
+		Done:           s.done.Get(),
+		Retried:        s.retried.Get(),
+		Canceled:       s.canceled.Get(),
+		Deleted:        s.deleted.Get(),
+		Expired:        s.expired.Get(),
+		Processed:      s.processed.Get(),
+		RunningWorkers: s.runningWorkers.Get(),
+	}
 }
 
 // Stats contains counters for tracking ticket processing activity.

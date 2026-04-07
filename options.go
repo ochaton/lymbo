@@ -50,6 +50,12 @@ type Opts struct {
 	// payload sets the ticket's payload data.
 	payload []byte
 
+	// resetAttempts indicates whether to reset the ticket's attempt count.
+	resetAttempts bool
+
+	// transferTube indicates a tube to transfer the ticket to.
+	transferTube *Tube
+
 	// update allows custom modification of the ticket.
 	update func(ctx context.Context, t *Ticket) error
 }
@@ -59,6 +65,13 @@ type Opts struct {
 func WithKeep() Option {
 	return func(o *Opts) error {
 		o.keep = true
+		return nil
+	}
+}
+
+func WithResetAttempts() Option {
+	return func(o *Opts) error {
+		o.resetAttempts = true
 		return nil
 	}
 }
@@ -127,6 +140,17 @@ func WithPayload(payload any) Option {
 			return fmt.Errorf("failed to marshal Payload: %w", err)
 		}
 		o.payload = v
+		return nil
+	}
+}
+
+// WithTube sets the tube to transfer the ticket to.
+func WithTube(tube Tube) Option {
+	return func(o *Opts) error {
+		if tube == "" {
+			return ErrTubeEmpty
+		}
+		o.transferTube = &tube
 		return nil
 	}
 }

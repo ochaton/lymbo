@@ -16,6 +16,7 @@ type PollRequest struct {
 	TTR             time.Duration
 	BackoffBase     float64
 	MaxBackoffDelay time.Duration
+	RequestTubes    []Tube
 }
 
 type DelayBackoff struct {
@@ -26,6 +27,7 @@ type DelayBackoff struct {
 
 type UpdateSet struct {
 	Id          TicketId
+	Tube        *Tube
 	Status      *status.Status
 	Nice        *int
 	Runat       *time.Time
@@ -76,11 +78,6 @@ type Store interface {
 
 // PollResult contains the result of a store polling operation.
 type PollResult struct {
-	// SleepUntil indicates when the next poll should occur.
-	// nil means tickets are available for immediate processing.
-	// A time in the future means no tickets are ready, sleep until this time.
-	SleepUntil *time.Time
-
 	// Tickets contains the tickets ready for processing.
 	// Will be empty if SleepUntil is non-nil.
 	Tickets []Ticket

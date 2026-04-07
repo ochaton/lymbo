@@ -1,6 +1,9 @@
 package lymbo
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Settings contains configuration options for Kharon.
 type Settings struct {
@@ -44,6 +47,9 @@ type Settings struct {
 
 	// flushInterval is the interval for flushing batches to the store.
 	flushInterval time.Duration
+
+	// tubes
+	tubes []Tube
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults.
@@ -60,6 +66,7 @@ func DefaultSettings() *Settings {
 		expirationInterval:   ExpirationInterval,
 		shutdownFlushTimeout: 5 * time.Second,
 		flushInterval:        100 * time.Millisecond,
+		tubes:                nil, // nil means only Default tube
 	}
 }
 
@@ -119,6 +126,13 @@ func (s *Settings) WithShutdownFlushTimeout(d time.Duration) *Settings {
 // WithFlushInterval sets the interval for flushing batches to the store.
 func (s *Settings) WithFlushInterval(d time.Duration) *Settings {
 	s.flushInterval = d
+	return s
+}
+
+// WithTubes sets the tubes for Kharon to work with.
+// If no tubes are provided, it defaults to the "default" tube.
+func (s *Settings) WithOnlyTubes(tubes ...Tube) *Settings {
+	s.tubes = slices.Compact(tubes)
 	return s
 }
 

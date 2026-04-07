@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS {{.TableName}} (
 CREATE INDEX IF NOT EXISTS idx_{{.TableName}}_pending_runat_nice ON {{.TableName}} (runat, nice)
 WHERE status = 'pending';
 
+ALTER TABLE {{.TableName}} ADD COLUMN IF NOT EXISTS tube TEXT NOT NULL DEFAULT 'default';
+
 -- Create trigger function
 CREATE OR REPLACE FUNCTION {{.TableName}}_update_mtime()
 RETURNS trigger AS $$
@@ -62,8 +64,8 @@ FROM {{.TableName}}
 WHERE id = $1;`))
 
 var put = template.Must(template.New("put").Parse(`-- name: PutTicket:
-INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason, tube)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (id) DO UPDATE SET
 	status = EXCLUDED.status,
 	runat = EXCLUDED.runat,
@@ -73,7 +75,8 @@ ON CONFLICT (id) DO UPDATE SET
 	mtime = EXCLUDED.mtime,
 	attempts = EXCLUDED.attempts,
 	payload = EXCLUDED.payload,
-	error_reason = EXCLUDED.error_reason;`))
+	error_reason = EXCLUDED.error_reason,
+	tube = EXCLUDED.tube;`))
 
 var delete = template.Must(template.New("delete").Parse(`-- name: DeleteTicket:
 DELETE FROM {{.TableName}} WHERE id = $1`))
@@ -84,7 +87,8 @@ SET
 	nice = COALESCE($3, nice),
 	runat = COALESCE($4, runat),
 	payload = COALESCE($5, payload),
-	error_reason = COALESCE($6, error_reason)
+	error_reason = COALESCE($6, error_reason),
+	tube = COALESCE($7, tube)
 WHERE id = $1`))
 
 // runat = now() + {jitter} + min(pow({base}, attempt), {max})
@@ -95,7 +99,8 @@ SET
 	nice = COALESCE($3, nice),
 	runat = now() + (GREATEST($4,0) + LEAST(POWER($5, attempts), $6)) * INTERVAL '1 second',
 	payload = COALESCE($7, payload),
-	error_reason = COALESCE($8, error_reason)
+	error_reason = COALESCE($8, error_reason),
+	tube = COALESCE($9, tube)
 WHERE id = $1`))
 
 // runat = now() + max(ttr, 0) + min(maxDelay, backoffBase^min(t.attempts, maxAttempts))
@@ -110,24 +115,16 @@ WITH rescheduled_tickets AS (
 	WHERE id IN (
 		SELECT t.id
 		FROM {{.TableName}} as t
-		WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz
+		WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz AND t.tube = ANY($7::text[])
 		LIMIT $6
 		FOR UPDATE SKIP LOCKED
 	)
-	RETURNING id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason
-),
-future_ticket AS (
-	SELECT ft.id, ft.status, ft.runat, ft.nice, ft.type, ft.ctime, ft.mtime, ft.attempts, ft.payload, ft.error_reason
-	FROM {{.TableName}} as ft
-	WHERE status = 'pending'
-	ORDER BY ft.runat ASC, ft.nice ASC
-	LIMIT 1
-	FOR SHARE SKIP LOCKED
+	RETURNING id, status, tube, runat, nice, type, ctime, mtime, attempts, payload, error_reason
 )
 SELECT
-	'ticket' AS ticket,
 	rescheduled_tickets.id           AS id,
 	rescheduled_tickets.status       AS status,
+	rescheduled_tickets.tube         AS tube,
 	rescheduled_tickets.runat        AS runat,
 	rescheduled_tickets.nice         AS nice,
 	rescheduled_tickets.type         AS type,
@@ -136,24 +133,9 @@ SELECT
 	rescheduled_tickets.attempts     AS attempts,
 	rescheduled_tickets.payload      AS payload,
 	rescheduled_tickets.error_reason AS error_reason
-FROM rescheduled_tickets
-UNION ALL
-SELECT
-	'future_ticket'            AS ticket,
-	future_ticket.id           AS id,
-	future_ticket.status       AS status,
-	future_ticket.runat        AS runat,
-	future_ticket.nice         AS nice,
-	future_ticket.type         AS type,
-	future_ticket.ctime        AS ctime,
-	future_ticket.mtime        AS mtime,
-	future_ticket.attempts     AS attempts,
-	future_ticket.payload      AS payload,
-	future_ticket.error_reason AS error_reason
-FROM future_ticket
-WHERE NOT EXISTS (SELECT 1 FROM rescheduled_tickets);`))
+FROM rescheduled_tickets;`))
 
-var expire = template.Must(template.New("expire").Parse(`-- ExpireTickets:
+var expire = template.Must(template.New("expire").Parse(`-- name: ExpireTickets:
 DELETE FROM {{.TableName}}
 WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2);`))
 
