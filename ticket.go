@@ -1,11 +1,25 @@
 package lymbo
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/ochaton/lymbo/status"
 )
+
+type TicketPayloadMarshaler interface {
+	MarshalPayload() ([]byte, error)
+}
+
+type TicketPayloadUnmarshaler interface {
+	UnmarshalPayload([]byte) error
+}
+
+type TicketPayload interface {
+	TicketPayloadMarshaler
+	TicketPayloadUnmarshaler
+}
 
 // TicketId is a unique identifier for a ticket.
 type TicketId string
@@ -18,14 +32,14 @@ func (t TicketId) String() string {
 type Ticket struct {
 	ID          TicketId
 	Status      status.Status
-	Runat       time.Time  // Time when the ticket should be processed
-	Nice        int        // Priority value (lower = higher priority)
-	Type        string     // Ticket type identifier for routing
-	Ctime       time.Time  // Creation time
-	Mtime       *time.Time // Last modification time
-	Attempts    int        // Number of processing attempts
-	Payload     any        // Arbitrary payload data
-	ErrorReason any        // Error information if processing failed
+	Runat       time.Time       // Time when the ticket should be processed
+	Nice        int             // Priority value (lower = higher priority)
+	Type        string          // Ticket type identifier for routing
+	Ctime       time.Time       // Creation time
+	Mtime       *time.Time      // Last modification time
+	Attempts    int             // Number of processing attempts
+	Payload     json.RawMessage // Serialized payload data
+	ErrorReason json.RawMessage // Serialized error information if processing failed
 }
 
 var (
@@ -65,7 +79,8 @@ func NewTicket(tid TicketId, typ string) (*Ticket, error) {
 
 // WithPayload sets the payload for the ticket and returns the ticket.
 func (t *Ticket) WithPayload(payload any) *Ticket {
-	t.Payload = payload
+	r := toDefaultPayloadMarshaller(payload)
+	t.Payload, _ = r.MarshalPayload()
 	return t
 }
 

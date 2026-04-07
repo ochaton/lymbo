@@ -61,7 +61,7 @@ SELECT id, status, runat, nice, type, ctime, mtime, attempts, payload, error_rea
 FROM {{.TableName}}
 WHERE id = $1;`))
 
-var put = template.Must(template.New("put").Parse(`
+var put = template.Must(template.New("put").Parse(`-- PutTicket:
 INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO UPDATE SET
@@ -75,7 +75,8 @@ ON CONFLICT (id) DO UPDATE SET
 	payload = EXCLUDED.payload,
 	error_reason = EXCLUDED.error_reason;`))
 
-var delete = template.Must(template.New("delete").Parse(`DELETE FROM {{.TableName}} WHERE id = $1`))
+var delete = template.Must(template.New("delete").Parse(`-- DeleteTicket:
+DELETE FROM {{.TableName}} WHERE id = $1`))
 
 var update = template.Must(template.New("update").Parse(`UPDATE {{.TableName}}
 SET
@@ -87,7 +88,8 @@ SET
 WHERE id = $1`))
 
 // runat = now() + {jitter} + min(pow({base}, attempt), {max})
-var backoff = template.Must(template.New("backoff").Parse(`UPDATE {{.TableName}}
+var backoff = template.Must(template.New("backoff").Parse(`-- BackoffTicket:
+UPDATE {{.TableName}}
 SET
 	status = COALESCE($2, status),
 	nice = COALESCE($3, nice),
@@ -96,7 +98,8 @@ SET
 	error_reason = COALESCE($8, error_reason)
 WHERE id = $1`))
 
-var poll = template.Must(template.New("poll").Parse(`WITH rescheduled_tickets AS (
+var poll = template.Must(template.New("poll").Parse(`-- PollTickets:
+WITH rescheduled_tickets AS (
 	UPDATE {{.TableName}} as t
 	SET
 		attempts = attempts + 1,
@@ -147,7 +150,8 @@ SELECT
 FROM future_ticket
 WHERE NOT EXISTS (SELECT 1 FROM rescheduled_tickets);`))
 
-var expire = template.Must(template.New("expire").Parse(`DELETE FROM {{.TableName}}
+var expire = template.Must(template.New("expire").Parse(`-- ExpireTickets:
+DELETE FROM {{.TableName}}
 WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2);`))
 
 type Queries struct {

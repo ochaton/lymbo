@@ -2,6 +2,7 @@ package lymbo
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/ochaton/lymbo/status"
@@ -29,8 +30,8 @@ type UpdateSet struct {
 	Nice        *int
 	Runat       *time.Time
 	Backoff     *DelayBackoff
-	Payload     any
-	ErrorReason any
+	Payload     json.RawMessage
+	ErrorReason json.RawMessage
 }
 
 // Store defines the interface for ticket storage and management.

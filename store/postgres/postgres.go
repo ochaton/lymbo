@@ -100,8 +100,8 @@ func (r *Tickets) Get(ctx context.Context, id lymbo.TicketId) (lymbo.Ticket, err
 		ctime       pgtype.Timestamptz
 		mtime       pgtype.Timestamptz
 		attempts    int32
-		payload     []byte
-		errorReason []byte
+		payload     json.RawMessage
+		errorReason json.RawMessage
 	)
 
 	err = r.db.QueryRow(ctx, r.queries.get, ticketUUID).Scan(
@@ -153,22 +153,6 @@ func (r *Tickets) Put(ctx context.Context, ticket lymbo.Ticket) error {
 		return lymbo.ErrTicketIDInvalid
 	}
 
-	var payload []byte
-	if ticket.Payload != nil {
-		payload, err = json.Marshal(ticket.Payload)
-		if err != nil {
-			return fmt.Errorf("failed to marshal payload: %w", err)
-		}
-	}
-
-	var errorReason []byte
-	if ticket.ErrorReason != nil {
-		errorReason, err = json.Marshal(ticket.ErrorReason)
-		if err != nil {
-			return fmt.Errorf("failed to marshal error_reason: %w", err)
-		}
-	}
-
 	var mtime pgtype.Timestamptz
 	if ticket.Mtime != nil {
 		mtime = pgtype.Timestamptz{Time: *ticket.Mtime, Valid: true}
@@ -183,8 +167,8 @@ func (r *Tickets) Put(ctx context.Context, ticket lymbo.Ticket) error {
 		pgtype.Timestamptz{Time: ticket.Ctime, Valid: true},
 		mtime,
 		int32(ticket.Attempts),
-		payload,
-		errorReason,
+		ticket.Payload,
+		ticket.ErrorReason,
 	)
 	return err
 }
@@ -252,8 +236,8 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 		ctime       pgtype.Timestamptz
 		mtime       pgtype.Timestamptz
 		attempts    int32
-		payload     []byte
-		errorReason []byte
+		payload     json.RawMessage
+		errorReason json.RawMessage
 	)
 
 	err = tx.QueryRow(ctx, r.queries.get, ticketUUID).Scan(
@@ -302,22 +286,8 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 		return err
 	}
 
-	// Re-marshal payload and error_reason
-	var updatedPayload []byte
-	if ticket.Payload != nil {
-		updatedPayload, err = json.Marshal(ticket.Payload)
-		if err != nil {
-			return fmt.Errorf("failed to marshal payload: %w", err)
-		}
-	}
-
-	var updatedErrorReason []byte
-	if ticket.ErrorReason != nil {
-		updatedErrorReason, err = json.Marshal(ticket.ErrorReason)
-		if err != nil {
-			return fmt.Errorf("failed to marshal error_reason: %w", err)
-		}
-	}
+	updatedPayload := ticket.Payload
+	updatedErrorReason := ticket.ErrorReason
 
 	var updatedMtime pgtype.Timestamptz
 	if ticket.Mtime != nil {
@@ -394,11 +364,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) er
 		// payload as $5
 		switch {
 		case us.Payload != nil:
-			payload, err := json.Marshal(us.Payload)
-			if err != nil {
-				return fmt.Errorf("failed to marshal payload: %w", err)
-			}
-			req = append(req, payload)
+			req = append(req, us.Payload)
 		default:
 			req = append(req, nil)
 		}
@@ -406,11 +372,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) er
 		// error_reason as $6
 		switch {
 		case us.ErrorReason != nil:
-			errorReason, err := json.Marshal(us.ErrorReason)
-			if err != nil {
-				return fmt.Errorf("failed to marshal error_reason: %w", err)
-			}
-			req = append(req, errorReason)
+			req = append(req, us.ErrorReason)
 		default:
 			req = append(req, nil)
 		}
@@ -471,8 +433,8 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 			ctime       pgtype.Timestamptz
 			mtime       pgtype.Timestamptz
 			attempts    int32
-			payload     []byte
-			errorReason []byte
+			payload     json.RawMessage
+			errorReason json.RawMessage
 		)
 
 		err := rows.Scan(

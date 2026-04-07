@@ -5,6 +5,8 @@ import "time"
 // Settings contains configuration options for Kharon.
 type Settings struct {
 	// processTime is the time-to-run for tickets (prevents re-polling during processing).
+	// during processTime the ticket is effectively blocked in "pending" state (rescheduled)
+	// during this time ticket is protected from double processing
 	processTime time.Duration
 
 	// maxBackoffDelay is the maximum delay between retry attempts.
@@ -44,16 +46,16 @@ type Settings struct {
 // DefaultSettings returns a Settings instance with sensible defaults.
 func DefaultSettings() *Settings {
 	return &Settings{
-		processTime:        30 * time.Second,
-		maxReactionDelay:   MaxPollIntervalDefault,
-		minReactionDelay:   MinPollIntervalDefault,
-		maxBackoffDelay:    MaxBackoffDelay,
-		backoffBase:        DefaultBackoffBase,
-		batchSize:          10,
-		workers:            4,
-		enableExpiration:   true,
-		expirationInterval: ExpirationInterval,
-		shutdownFlushTimeout:  5 * time.Second,
+		processTime:          30 * time.Second,
+		maxReactionDelay:     MaxPollIntervalDefault,
+		minReactionDelay:     MinPollIntervalDefault,
+		maxBackoffDelay:      MaxBackoffDelay,
+		backoffBase:          DefaultBackoffBase,
+		batchSize:            4,
+		workers:              4,
+		enableExpiration:     true,
+		expirationInterval:   ExpirationInterval,
+		shutdownFlushTimeout: 5 * time.Second,
 	}
 }
 

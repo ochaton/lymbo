@@ -2,13 +2,14 @@ package lymbo
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ochaton/lymbo/status"
 )
 
 // Option is a functional option for configuring ticket operations.
-type Option func(o *Opts)
+type Option func(o *Opts) error
 
 type delayHow int
 
@@ -41,13 +42,13 @@ type Opts struct {
 	keep bool
 
 	// errorReason stores the reason for failure (for Fail operations).
-	errorReason any
+	errorReason []byte
 
 	// nice sets the ticket's nice value (priority).
 	nice *int
 
 	// payload sets the ticket's payload data.
-	payload any
+	payload []byte
 
 	// update allows custom modification of the ticket.
 	update func(ctx context.Context, t *Ticket) error
@@ -56,16 +57,23 @@ type Opts struct {
 // WithKeep indicates that the ticket should be kept in the store after processing.
 // Useful for audit trails or tracking completed work.
 func WithKeep() Option {
-	return func(o *Opts) {
+	return func(o *Opts) error {
 		o.keep = true
+		return nil
 	}
 }
 
 // WithErrorReason sets an error reason for failed ticket operations.
 // The reason will be stored in the ticket's ErrorReason field.
 func WithErrorReason(reason any) Option {
-	return func(o *Opts) {
-		o.errorReason = reason
+	rv := toDefaultErrorMarshaller(reason)
+	return func(o *Opts) error {
+		v, err := rv.MarshalError()
+		if err != nil {
+			return fmt.Errorf("failed to marshal ErrorReason: %w", err)
+		}
+		o.errorReason = v
+		return nil
 	}
 }
 
@@ -89,27 +97,36 @@ func FixedDelay(duration time.Duration) DelayStrategy {
 
 // WithDelay sets a delay before the ticket becomes eligible for processing.
 func WithDelay(delay DelayStrategy) Option {
-	return func(o *Opts) {
+	return func(o *Opts) error {
 		o.delay = delay
+		return nil
 	}
 }
 
 // WithNice sets the ticket's nice value (priority).
 func WithNice(nice int) Option {
-	return func(o *Opts) {
+	return func(o *Opts) error {
 		o.nice = &nice
+		return nil
 	}
 }
 
 // WithUpdate allows custom modification of the ticket before storing.
 func WithUpdate(update func(ctx context.Context, t *Ticket) error) Option {
-	return func(o *Opts) {
+	return func(o *Opts) error {
 		o.update = update
+		return nil
 	}
 }
 
 func WithPayload(payload any) Option {
-	return func(o *Opts) {
-		o.payload = payload
+	rv := toDefaultPayloadMarshaller(payload)
+	return func(o *Opts) error {
+		v, err := rv.MarshalPayload()
+		if err != nil {
+			return fmt.Errorf("failed to marshal Payload: %w", err)
+		}
+		o.payload = v
+		return nil
 	}
 }
