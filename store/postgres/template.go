@@ -6,7 +6,7 @@ import (
 	"text/template"
 )
 
-var migrate = template.Must(template.New("migrate").Parse(`
+var migrate = template.Must(template.New("migrate").Parse(`-- name: Migrate:
 BEGIN;
 -- Create ticket_status enum if it doesn't exist
 DO $$ BEGIN
@@ -56,12 +56,12 @@ CREATE TRIGGER {{.TableName}}_update_mtime_trg
 
 COMMIT;`))
 
-var get = template.Must(template.New("get").Parse(`
+var get = template.Must(template.New("get").Parse(`-- name: GetTicket:
 SELECT id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason
 FROM {{.TableName}}
 WHERE id = $1;`))
 
-var put = template.Must(template.New("put").Parse(`-- PutTicket:
+var put = template.Must(template.New("put").Parse(`-- name: PutTicket:
 INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO UPDATE SET
@@ -75,7 +75,7 @@ ON CONFLICT (id) DO UPDATE SET
 	payload = EXCLUDED.payload,
 	error_reason = EXCLUDED.error_reason;`))
 
-var delete = template.Must(template.New("delete").Parse(`-- DeleteTicket:
+var delete = template.Must(template.New("delete").Parse(`-- name: DeleteTicket:
 DELETE FROM {{.TableName}} WHERE id = $1`))
 
 var update = template.Must(template.New("update").Parse(`UPDATE {{.TableName}}
@@ -88,7 +88,7 @@ SET
 WHERE id = $1`))
 
 // runat = now() + {jitter} + min(pow({base}, attempt), {max})
-var backoff = template.Must(template.New("backoff").Parse(`-- BackoffTicket:
+var backoff = template.Must(template.New("backoff").Parse(`-- name: BackoffTicket:
 UPDATE {{.TableName}}
 SET
 	status = COALESCE($2, status),
@@ -98,17 +98,20 @@ SET
 	error_reason = COALESCE($8, error_reason)
 WHERE id = $1`))
 
-var poll = template.Must(template.New("poll").Parse(`-- PollTickets:
+// runat = now() + max(ttr, 0) + min(maxDelay, backoffBase^min(t.attempts, maxAttempts))
+var poll = template.Must(template.New("poll").Parse(`-- name: PollTickets:
 WITH rescheduled_tickets AS (
 	UPDATE {{.TableName}} as t
 	SET
 		attempts = attempts + 1,
-		runat = $1::Timestamptz + (GREATEST($2, 0) + LEAST($3, POWER($4, t.attempts))) * INTERVAL '1 second'
+		runat = $1::Timestamptz +
+			(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
+			* INTERVAL '1 second'
 	WHERE id IN (
 		SELECT t.id
 		FROM {{.TableName}} as t
 		WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz
-		LIMIT $5
+		LIMIT $6
 		FOR UPDATE SKIP LOCKED
 	)
 	RETURNING id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason

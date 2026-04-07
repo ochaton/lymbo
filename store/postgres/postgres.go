@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -396,22 +397,35 @@ type pollPendingParams struct {
 	ttr         int32
 	maxDelay    int32
 	backoffBase float64
+	maxAttempts int32
 	limit       int32
 }
 
+func clampMaxAttempts(maxDelay int32, backoffBase float64) int32 {
+	if backoffBase <= 1 {
+		return math.MaxInt32
+	}
+	return int32(math.Ceil(math.Log(float64(maxDelay)) / math.Log(backoffBase)))
+}
+
 func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo.PollResult, error) {
+	maxAttempts := clampMaxAttempts(int32(req.MaxBackoffDelay.Seconds()), req.BackoffBase)
+
 	dto := pollPendingParams{
 		now:         pgtype.Timestamptz{Valid: true, Time: req.Now},
 		ttr:         int32(req.TTR.Seconds()),
 		maxDelay:    int32(req.MaxBackoffDelay.Seconds()),
 		backoffBase: req.BackoffBase,
+		maxAttempts: maxAttempts,
 		limit:       int32(req.Limit),
 	}
+
 	rows, err := r.db.Query(ctx, r.queries.poll,
 		dto.now,
 		dto.ttr,
 		dto.maxDelay,
 		dto.backoffBase,
+		dto.maxAttempts,
 		dto.limit,
 	)
 	if err != nil {
