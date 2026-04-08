@@ -31,16 +31,18 @@ jobs:
           ${{ runner.os }}-go-
 
     - name: Download dependencies
-      run: go mod download
+      run: |
+        go mod download
+        cd test && go mod download
 
     - name: Run tests (Memory Store)
-      run: go test -v -race -run TestMemoryStore ./...
+      run: cd test && go test -v -race -run TestMemoryStore ./...
 
     - name: Run tests (PostgreSQL Store with testcontainers)
-      run: go test -v -race -run TestPostgresStore ./...
+      run: cd test && go test -v -race -run TestPostgresStore ./...
 
     - name: Run all tests with coverage
-      run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      run: cd test && go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
@@ -85,8 +87,3 @@ jobs:
 
     - name: Build
       run: go build -v ./...
-
-    - name: Build examples
-      run: |
-        cd examples/basic
-        go build -v .

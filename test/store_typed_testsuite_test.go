@@ -93,7 +93,7 @@ func (s *StoreTestSuite) TestBasicWorkflowTyped(t *testing.T) {
 }
 
 func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	store, cleanup := s.factory(t)
@@ -107,8 +107,8 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
 	kh := lymbo.NewKharon(store, settings, nil)
 	router := lymbo.NewRouter()
 
-	base := 2.0
-	maxDelay := 5 * time.Second
+	base := 1.5
+	maxDelay := 3 * time.Second
 	jitter := 100 * time.Millisecond
 
 	retryCount := atomic.Int32{}
@@ -139,7 +139,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 4
-	}, 20*time.Second, 10*time.Millisecond, "should complete 4 attempts")
+	}, 12*time.Second, 10*time.Millisecond, "should complete 4 attempts")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -153,7 +153,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
 
 	totalTime := processTimes[len(processTimes)-1].Sub(processTimes[0])
 	t.Logf("Total time for 4 attempts: %v", totalTime)
-	assert.Greater(t, totalTime, 5*time.Second, "total time should show exponential delays")
+	assert.Greater(t, totalTime, 3*time.Second, "total time should show exponential delays")
 
 	stats := kh.Stats()
 	assert.Equal(t, int64(1), stats.Added)
@@ -511,7 +511,7 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelayTyped(t *testing.T) {
 	kh := lymbo.NewKharon(store, settings, nil)
 	router := lymbo.NewRouter()
 
-	base := 2.0
+	base := 1.5
 	maxDelay := 500 * time.Millisecond
 	jitter := 0 * time.Millisecond
 

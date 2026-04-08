@@ -14,15 +14,16 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// postgresStoreFactory creates a PostgreSQL store with testcontainers for testing
-func postgresStoreFactory(t *testing.T) (lymbo.Store, func()) {
-	t.Helper()
+// TestPostgresStore runs the full test suite against the PostgreSQL store
+func TestPostgresStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping postgres integration test in short mode")
+	}
 
-	// Create a context with extended timeout for container setup
+	// Start PostgreSQL container once for all subtests
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer setupCancel()
 
-	// Start PostgreSQL container
 	container, err := pgcontainer.Run(setupCtx,
 		"postgres:16-alpine",
 		pgcontainer.WithDatabase("testdb"),
@@ -34,37 +35,31 @@ func postgresStoreFactory(t *testing.T) (lymbo.Store, func()) {
 				WithStartupTimeout(90*time.Second)),
 	)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := testcontainers.TerminateContainer(container); err != nil {
+			t.Logf("failed to terminate container: %s", err)
+		}
+	})
 
-	// Get connection string
 	connStr, err := container.ConnectionString(setupCtx, "sslmode=disable")
 	require.NoError(t, err)
 
-	// Create connection pool
 	pool, err := pgxpool.New(setupCtx, connStr)
 	require.NoError(t, err)
+	t.Cleanup(pool.Close)
 
-	// Create store and run migrations
 	store := postgres.NewTicketsRepository(pool)
 	err = store.Migrate(setupCtx)
 	require.NoError(t, err)
 
-	// Return store and cleanup function
-	cleanup := func() {
-		pool.Close()
-		if err := testcontainers.TerminateContainer(container); err != nil {
-			t.Logf("failed to terminate container: %s", err)
-		}
+	// Factory reuses the shared pool; truncates the table for test isolation
+	factory := func(t *testing.T) (lymbo.Store, func()) {
+		t.Helper()
+		_, err := pool.Exec(context.Background(), "TRUNCATE tickets")
+		require.NoError(t, err)
+		return store, func() {}
 	}
 
-	return store, cleanup
-}
-
-// TestPostgresStore runs the full test suite against the PostgreSQL store
-func TestPostgresStore(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping postgres integration test in short mode")
-	}
-
-	suite := NewStoreTestSuite(postgresStoreFactory)
+	suite := NewStoreTestSuite(factory)
 	suite.RunAll(t)
 }

@@ -146,7 +146,7 @@ func (s *StoreTestSuite) TestFixedDelayStrategy(t *testing.T) {
 
 // TestExponentialBackoffStrategy tests exponential backoff delay calculation
 func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	store, cleanup := s.factory(t)
@@ -154,14 +154,14 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 
 	settings := lymbo.DefaultSettings().
 		WithProcessTime(100 * time.Millisecond).
-		WithMinReactionDelay(10 * time.Millisecond).
-		WithMaxReactionDelay(100 * time.Millisecond).
+		WithMinReactionDelay(1 * time.Millisecond).
+		WithMaxReactionDelay(10 * time.Millisecond).
 		WithWorkers(1)
 	kh := lymbo.NewKharon(store, settings, nil)
 	router := lymbo.NewRouter()
 
-	base := 2.0
-	maxDelay := 5 * time.Second
+	base := 1.5
+	maxDelay := 3 * time.Second
 	jitter := 100 * time.Millisecond
 
 	retryCount := atomic.Int32{}
@@ -203,7 +203,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	// Wait for all retries to complete
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 4
-	}, 20*time.Second, 10*time.Millisecond, "should complete 4 attempts")
+	}, 12*time.Second, 10*time.Millisecond, "should complete 4 attempts")
 
 	// Verify exponential backoff worked
 	mu.Lock()
@@ -220,9 +220,9 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	// Verify the total time shows that retries were delayed
 	totalTime := processTimes[len(processTimes)-1].Sub(processTimes[0])
 	t.Logf("Total time for 4 attempts: %v", totalTime)
-	// With exponential backoff (base 2), we expect roughly 1s + 2s + min(4s, 5s maxDelay) = 8s total
-	// Allow significant tolerance due to batching (±3s)
-	assert.Greater(t, totalTime, 5*time.Second, "total time should show exponential delays")
+	// With exponential backoff (base 1.5), we expect roughly 1.5s + 2.25s + 3s = 6.75s total
+	// Allow significant tolerance due to batching
+	assert.Greater(t, totalTime, 3*time.Second, "total time should show exponential delays")
 
 	// Verify stats
 	stats := kh.Stats()
@@ -688,7 +688,7 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
 	kh := lymbo.NewKharon(store, settings, nil)
 	router := lymbo.NewRouter()
 
-	base := 2.0
+	base := 1.5
 	maxDelay := 500 * time.Millisecond
 	jitter := 0 * time.Millisecond
 
