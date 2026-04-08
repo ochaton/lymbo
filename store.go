@@ -64,16 +64,24 @@ type Store interface {
 
 	// ExpireTickets removes expired tickets from the store.
 	// Only removes non-pending tickets where Runat is before now.
-	// Deletes up to limit tickets.
-	ExpireTickets(ctx context.Context, limit int, now time.Time) (int64, error)
+	// Returns info about each expired ticket.
+	ExpireTickets(ctx context.Context, limit int, now time.Time) ([]TransitionInfo, error)
 
 	// DeleteBatch removes multiple tickets from the store.
-	// This operation is idempotent and won't return an error if some tickets don't exist.
-	DeleteBatch(ctx context.Context, ids []TicketId) error
+	// Returns info about each deleted ticket.
+	DeleteBatch(ctx context.Context, ids []TicketId) ([]TransitionInfo, error)
 
-	// UpdateBatch modifies multiple tickets using the provided UpdateFunc.
-	// The UpdateFunc receives a pointer to each ticket to modify.
-	UpdateBatch(ctx context.Context, updates []UpdateSet) error
+	// UpdateBatch modifies multiple tickets using the provided UpdateSets.
+	// Returns info about each updated ticket.
+	UpdateBatch(ctx context.Context, updates []UpdateSet) ([]TransitionInfo, error)
+}
+
+// TransitionInfo describes a ticket that was affected by a store operation.
+type TransitionInfo struct {
+	Id     TicketId
+	Type   string
+	Tube   Tube
+	Status status.Status
 }
 
 // PollResult contains the result of a store polling operation.

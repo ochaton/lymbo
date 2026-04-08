@@ -1,0 +1,419 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Throughput",
+      "description": "Processed tickets per second",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [{ "expr": "rate(kharon_tickets_total{operation=\"processed\"}[1m])", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Workers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 7 }, { "color": "red", "value": 8 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [{ "expr": "kharon_workers_running", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Failure Ratio",
+      "description": "rate(failed) / rate(processed)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.05 }, { "color": "red", "value": 0.1 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [{ "expr": "sum(rate(kharon_tickets_total{operation=\"failed\"}[1m])) / clamp_min(sum(rate(kharon_tickets_total{operation=\"processed\"}[1m])), 1)", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Retry Ratio",
+      "description": "rate(retried) / rate(processed)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.2 }, { "color": "red", "value": 0.5 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [{ "expr": "sum(rate(kharon_tickets_total{operation=\"retried\"}[1m])) / clamp_min(sum(rate(kharon_tickets_total{operation=\"processed\"}[1m])), 1)", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Backlog Growth",
+      "description": "added/s - processed/s",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [{ "expr": "sum(rate(kharon_tickets_total{operation=\"added\"}[1m])) - sum(rate(kharon_tickets_total{operation=\"processed\"}[1m]))", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Mean Latency",
+      "description": "Average processing duration (Little's Law: L = \u03bbW)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [{ "expr": "sum(rate(kharon_task_process_duration_seconds_sum{type=~\"$type\"}[1m])) / clamp_min(sum(rate(kharon_task_process_duration_seconds_count{type=~\"$type\"}[1m])), 0.001)", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+
+    {
+      "title": "Throughput",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "title": "Added vs Processed",
+      "description": "Gap between added and processed rate shows backlog pressure",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "gap" }, "properties": [
+            { "id": "custom.drawStyle", "value": "bars" }, { "id": "custom.fillOpacity", "value": 30 },
+            { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.lineWidth", "value": 0 }
+          ]}
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_total{operation=\"added\"}[1m])", "legendFormat": "added", "refId": "A" },
+        { "expr": "rate(kharon_tickets_total{operation=\"processed\"}[1m])", "legendFormat": "processed", "refId": "B" },
+        { "expr": "sum(rate(kharon_tickets_total{operation=\"added\"}[1m])) - sum(rate(kharon_tickets_total{operation=\"processed\"}[1m]))", "legendFormat": "gap", "refId": "C" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Throughput by Type",
+      "description": "Added and processed per ticket type",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_by_type_total{operation=\"added\", type=~\"$type\"}[1m])", "legendFormat": "{{type}} added", "refId": "A" },
+        { "expr": "rate(kharon_tickets_by_type_total{operation=\"deleted\", type=~\"$type\"}[1m])", "legendFormat": "{{type}} processed", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Throughput by Tube",
+      "description": "Added and processed per tube",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"added\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} added", "refId": "A" },
+        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"deleted\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} processed", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Problems by Tube",
+      "description": "Failures and retries per tube",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "/failed/" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byRegexp", "options": "/retried/" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"failed\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} failed", "refId": "A" },
+        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"retried\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} retried", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+
+    {
+      "title": "Problems by Type",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": false
+    },
+    {
+      "title": "Failures by Type",
+      "description": "Which ticket types are failing?",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "stacking": { "mode": "normal" }, "showPoints": "never" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_by_type_total{operation=\"failed\", type=~\"$type\"}[1m])", "legendFormat": "{{type}}", "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Retries by Type",
+      "description": "Which ticket types are retrying?",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "stacking": { "mode": "normal" }, "showPoints": "never" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(kharon_tickets_by_type_total{operation=\"retried\", type=~\"$type\"}[1m])", "legendFormat": "{{type}}", "refId": "A" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+
+    {
+      "title": "Latency ($type)",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false
+    },
+    {
+      "title": "Processing Duration (p$percentile + mean)",
+      "description": "Latency percentiles and mean. Mean is useful for Little's Law: L = \u03bbW.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "/mean/" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 5] } }, { "id": "custom.lineWidth", "value": 1 }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "histogram_quantile($percentile, sum by (le, type) (rate(kharon_task_process_duration_seconds_bucket{type=~\"$type\"}[1m])))", "legendFormat": "{{type}} p$percentile", "refId": "A" },
+        { "expr": "sum by (type) (rate(kharon_task_process_duration_seconds_sum{type=~\"$type\"}[1m])) / clamp_min(sum by (type) (rate(kharon_task_process_duration_seconds_count{type=~\"$type\"}[1m])), 0.001)", "legendFormat": "{{type}} mean", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Processing Duration Heatmap",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "calculate": false, "yAxis": { "unit": "s" }, "color": { "scheme": "Spectral", "mode": "scheme", "steps": 64, "reverse": true }, "tooltip": { "show": true } },
+      "targets": [{ "expr": "sum by (le) (rate(kharon_task_process_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+
+    {
+      "title": "Queue Wait ($type)",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "collapsed": false
+    },
+    {
+      "title": "Queue Wait by Type (p$percentile + mean)",
+      "description": "How long tickets waited in queue before processing started.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "/mean/" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 5] } }, { "id": "custom.lineWidth", "value": 1 }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "histogram_quantile($percentile, sum by (le, type) (rate(kharon_queue_wait_duration_seconds_bucket{type=~\"$type\"}[1m])))", "legendFormat": "{{type}} p$percentile", "refId": "A" },
+        { "expr": "sum by (type) (rate(kharon_queue_wait_duration_seconds_sum{type=~\"$type\"}[1m])) / clamp_min(sum by (type) (rate(kharon_queue_wait_duration_seconds_count{type=~\"$type\"}[1m])), 0.001)", "legendFormat": "{{type}} mean", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Queue Wait Heatmap",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "calculate": false, "yAxis": { "unit": "s" }, "color": { "scheme": "Blues", "mode": "scheme", "steps": 64 }, "tooltip": { "show": true } },
+      "targets": [{ "expr": "sum by (le) (rate(kharon_queue_wait_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Queue Wait by Tube (p$percentile + mean)",
+      "description": "Queue wait broken down by tube.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 49 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "/mean/" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 5] } }, { "id": "custom.lineWidth", "value": 1 }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_queue_wait_duration_by_tube_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_queue_wait_duration_by_tube_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_queue_wait_duration_by_tube_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Processing Duration by Tube (p$percentile + mean)",
+      "description": "Processing latency broken down by tube.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 49 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "/mean/" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 5] } }, { "id": "custom.lineWidth", "value": 1 }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_task_process_duration_by_tube_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_task_process_duration_by_tube_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_task_process_duration_by_tube_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+
+    {
+      "title": "Operations Detail",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
+      "collapsed": false
+    },
+    {
+      "title": "All Operations Rate (global)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "rate(kharon_tickets_total[1m])", "legendFormat": "{{operation}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Failure & Retry Ratio Over Time",
+      "description": "Sustained high values indicate systemic problems",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "transparent", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "failure ratio" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "retry ratio" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "sum(rate(kharon_tickets_total{operation=\"failed\"}[1m])) / clamp_min(sum(rate(kharon_tickets_total{operation=\"processed\"}[1m])), 1)", "legendFormat": "failure ratio", "refId": "A" },
+        { "expr": "sum(rate(kharon_tickets_total{operation=\"retried\"}[1m])) / clamp_min(sum(rate(kharon_tickets_total{operation=\"processed\"}[1m])), 1)", "legendFormat": "retry ratio", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["kharon"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "definition": "label_values(kharon_tickets_by_type_total, type)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "type",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(kharon_tickets_by_type_total, type)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query",
+        "label": "Ticket Type"
+      },
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "definition": "label_values(kharon_tickets_by_tube_total, tube)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "tube",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(kharon_tickets_by_tube_total, tube)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query",
+        "label": "Tube"
+      },
+      {
+        "current": { "selected": true, "text": "0.99", "value": "0.99" },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "percentile",
+        "options": [
+          { "selected": false, "text": "0.50", "value": "0.50" },
+          { "selected": false, "text": "0.75", "value": "0.75" },
+          { "selected": false, "text": "0.90", "value": "0.90" },
+          { "selected": false, "text": "0.95", "value": "0.95" },
+          { "selected": true, "text": "0.99", "value": "0.99" },
+          { "selected": false, "text": "0.999", "value": "0.999" }
+        ],
+        "query": "0.50,0.75,0.90,0.95,0.99,0.999",
+        "type": "custom",
+        "label": "Percentile"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Kharon",
+  "uid": "kharon-overview",
+  "version": 4
+}

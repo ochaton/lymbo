@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ochaton/lymbo"
+	"github.com/ochaton/lymbo/stats"
 	"github.com/ochaton/lymbo/store/memory"
 	"github.com/ochaton/lymbo/store/postgres"
 
@@ -109,14 +110,13 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		var prev lymbo.Stats
+		var prev stats.Stats
 		ts := time.Now()
 		for {
 			select {
 			case <-ticker.C:
 				stats := kh.Stats()
 				slog.InfoContext(ctx, "kharon stats",
-					"scheduled", stats.Scheduled,
 					"polled", stats.Polled,
 					"processed", stats.Processed,
 					"failed", stats.Failed,
@@ -126,12 +126,8 @@ func main() {
 				interval := time.Since(ts).Seconds()
 				if interval > 0 {
 					slog.InfoContext(ctx, "kharon rates",
-						"schedule_rate", hRate(float64(stats.Scheduled-prev.Scheduled)/interval),
-						// "add_rate", hRate(float64(stats.Added-prev.Added)/interval),
 						"poll_rate", hRate(float64(stats.Polled-prev.Polled)/interval),
 						"ack_rate", hRate(float64(stats.Acked-prev.Acked)/interval),
-						// "done_rate", hRate(float64(stats.Done-prev.Done)/interval),
-						// "cancel_rate", hRate(float64(stats.Canceled-prev.Canceled)/interval),
 						"fail_rate", hRate(float64(stats.Failed-prev.Failed)/interval),
 						"expire_rate", hRate(float64(stats.Expired-prev.Expired)/interval),
 					)

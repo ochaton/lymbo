@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ochaton/lymbo/stats"
 	"github.com/ochaton/lymbo/status"
 	"golang.org/x/time/rate"
 )
@@ -52,11 +53,11 @@ type Kharon struct {
 	income   chan *Ticket
 	outcome  chan msg
 
-	stats *stats
+	stats *stats.T
 }
 
 func (kh *Kharon) ResetStats() {
-	kh.stats.reset()
+	kh.stats.Reset()
 }
 
 // NewKharon creates a new Kharon instance with the provided store, settings, and logger.
@@ -77,13 +78,15 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 
 	s.normalize()
 
+	st := stats.New()
+
 	return &Kharon{
-		store:    store,
+		store:    newObservableStore(store, st),
 		settings: *s,
 		logger:   logger,
 		income:   make(chan *Ticket, s.workers),
 		outcome:  make(chan msg, 10*s.workers),
-		stats:    newStats(),
+		stats:    st,
 	}
 }
 
@@ -194,7 +197,7 @@ func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	k.stats.acked.Add(1)
+	k.stats.Inc(stats.Ack)
 	return nil
 }
 
@@ -208,7 +211,7 @@ func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.done.Add(1)
+	k.stats.Inc(stats.Done)
 	return nil
 }
 
@@ -226,7 +229,7 @@ func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error
 	if err != nil {
 		return err
 	}
-	k.stats.canceled.Add(1)
+	k.stats.Inc(stats.Cancel)
 	return nil
 }
 
@@ -239,7 +242,7 @@ func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.failed.Add(1)
+	k.stats.Inc(stats.Fail)
 	return nil
 }
 
@@ -252,7 +255,7 @@ func (k *Kharon) Restart(ctx context.Context, tid TicketId, opts ...Option) erro
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.scheduled.Add(1)
+	k.stats.Inc(stats.Add)
 	return nil
 }
 
@@ -266,7 +269,7 @@ func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error 
 	if err := k.save(ctx, tid, o); err != nil {
 		return err
 	}
-	k.stats.retried.Add(1)
+	k.stats.Inc(stats.Retry)
 	return nil
 }
 
@@ -282,7 +285,7 @@ func (k *Kharon) Put(ctx context.Context, t Ticket, opts ...Option) error {
 	if err := k.store.Put(ctx, t); err != nil {
 		return err
 	}
-	k.stats.added.Add(1)
+	k.stats.Inc(stats.Add)
 	return nil
 }
 
@@ -291,7 +294,7 @@ func (k *Kharon) Delete(ctx context.Context, tid TicketId) error {
 	if err := k.store.Delete(ctx, tid); err != nil {
 		return err
 	}
-	k.stats.deleted.Add(1)
+	k.stats.Inc(stats.Delete)
 	return nil
 }
 
@@ -300,7 +303,7 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 	return k.store.Get(ctx, tid)
 }
 
-func (k *Kharon) Stats() Stats {
+func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
 }
 
@@ -347,8 +350,8 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 // runWorker processes tickets from income channel.
 // Exits when ctx is cancelled.
 func (k *Kharon) runWorker(ctx context.Context, r *Router) {
-	k.stats.runningWorkers.Add(1)
-	defer k.stats.runningWorkers.Add(-1)
+	k.stats.Inc(stats.Workers)
+	defer k.stats.Dec(stats.Workers)
 	defer k.logger.DebugContext(ctx, "worker exiting")
 
 	for {
@@ -357,7 +360,6 @@ func (k *Kharon) runWorker(ctx context.Context, r *Router) {
 			return
 		case t := <-k.income:
 			k.processTicket(ctx, r, t)
-			k.stats.processed.Add(1)
 		}
 	}
 }
@@ -399,12 +401,12 @@ func (k *Kharon) runPusher(ctx context.Context) {
 			defer cancel()
 
 			if len(delIds) > 0 {
-				if err := k.store.DeleteBatch(flushCtx, delIds); err != nil {
+				if _, err := k.store.DeleteBatch(flushCtx, delIds); err != nil {
 					k.logger.ErrorContext(flushCtx, "error deleting batch", "error", err)
 				}
 			}
 			if len(upds) > 0 {
-				if err := k.store.UpdateBatch(flushCtx, upds); err != nil {
+				if _, err := k.store.UpdateBatch(flushCtx, upds); err != nil {
 					k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
 				}
 			}
@@ -535,12 +537,11 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			}
 		}
 
-		k.stats.polled.Add(int64(len(result.Tickets)))
+		k.stats.Add(stats.Poll, int64(resultSize))
 
 		for _, t := range result.Tickets {
 			select {
 			case k.income <- &t:
-				k.stats.scheduled.Add(1)
 			case <-ctx.Done():
 				return 0
 			}
@@ -561,11 +562,11 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 			k.logger.DebugContext(ctx, "ticket expiration worker exiting")
 			return
 		case <-ticker.C:
-			if n, err := k.store.ExpireTickets(ctx, ExpirationBatchSize, time.Now()); err != nil {
+			if expired, err := k.store.ExpireTickets(ctx, ExpirationBatchSize, time.Now()); err != nil {
 				k.logger.ErrorContext(ctx, "error expiring tickets", "error", err)
-			} else if n > 0 {
-				k.stats.expired.Add(n)
-				k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", n)
+			} else if len(expired) > 0 {
+				k.stats.Add(stats.Expire, int64(len(expired)))
+				k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", len(expired))
 			}
 		}
 	}
@@ -573,6 +574,8 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 
 // processTicket processes a single ticket with the appropriate handler.
 func (k *Kharon) processTicket(ctx context.Context, r *Router, t *Ticket) {
+	s := time.Now()
+
 	handler := r.Handler(t)
 	defer func() {
 		if r := recover(); r != nil {
@@ -587,12 +590,19 @@ func (k *Kharon) processTicket(ctx context.Context, r *Router, t *Ticket) {
 
 	rctx, cancel := context.WithDeadline(ctx, t.Runat)
 	defer cancel()
+
+	k.stats.ObserveQueueWaitDuration(t.Type, t.Tube.String(), s.Sub(t.ReadyAt))
+
 	err := handler.ProcessTicket(rctx, t)
+	k.stats.ObserveTaskProcessDuration(t.Type, t.Tube.String(), time.Since(s))
+
 	if err != nil {
 		k.logger.ErrorContext(ctx, "error processing ticket",
 			"ticket_id", t.ID,
 			"type", t.Type,
 			"error", err,
 		)
+		return
 	}
+	k.stats.Inc(stats.Process)
 }

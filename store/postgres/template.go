@@ -79,7 +79,7 @@ ON CONFLICT (id) DO UPDATE SET
 	tube = EXCLUDED.tube;`))
 
 var delete = template.Must(template.New("delete").Parse(`-- name: DeleteTicket:
-DELETE FROM {{.TableName}} WHERE id = $1`))
+DELETE FROM {{.TableName}} WHERE id = $1 RETURNING id, type, tube`))
 
 var update = template.Must(template.New("update").Parse(`UPDATE {{.TableName}}
 SET
@@ -89,7 +89,8 @@ SET
 	payload = COALESCE($5, payload),
 	error_reason = COALESCE($6, error_reason),
 	tube = COALESCE($7, tube)
-WHERE id = $1`))
+WHERE id = $1
+RETURNING id, type, tube, status`))
 
 // runat = now() + {jitter} + min(pow({base}, attempt), {max})
 var backoff = template.Must(template.New("backoff").Parse(`-- name: BackoffTicket:
@@ -101,43 +102,38 @@ SET
 	payload = COALESCE($7, payload),
 	error_reason = COALESCE($8, error_reason),
 	tube = COALESCE($9, tube)
-WHERE id = $1`))
+WHERE id = $1
+RETURNING id, type, tube, status`))
 
 // runat = now() + max(ttr, 0) + min(maxDelay, backoffBase^min(t.attempts, maxAttempts))
 var poll = template.Must(template.New("poll").Parse(`-- name: PollTickets:
-WITH rescheduled_tickets AS (
+WITH candidates AS (
+	SELECT t.id, t.runat AS ready_at
+	FROM {{.TableName}} as t
+	WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz AND t.tube = ANY($7::text[])
+	LIMIT $6
+	FOR UPDATE SKIP LOCKED
+),
+rescheduled_tickets AS (
 	UPDATE {{.TableName}} as t
 	SET
 		attempts = attempts + 1,
 		runat = $1::Timestamptz +
 			(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
 			* INTERVAL '1 second'
-	WHERE id IN (
-		SELECT t.id
-		FROM {{.TableName}} as t
-		WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz AND t.tube = ANY($7::text[])
-		LIMIT $6
-		FOR UPDATE SKIP LOCKED
-	)
+	WHERE id IN (SELECT id FROM candidates)
 	RETURNING id, status, tube, runat, nice, type, ctime, mtime, attempts, payload, error_reason
 )
 SELECT
-	rescheduled_tickets.id           AS id,
-	rescheduled_tickets.status       AS status,
-	rescheduled_tickets.tube         AS tube,
-	rescheduled_tickets.runat        AS runat,
-	rescheduled_tickets.nice         AS nice,
-	rescheduled_tickets.type         AS type,
-	rescheduled_tickets.ctime        AS ctime,
-	rescheduled_tickets.mtime        AS mtime,
-	rescheduled_tickets.attempts     AS attempts,
-	rescheduled_tickets.payload      AS payload,
-	rescheduled_tickets.error_reason AS error_reason
-FROM rescheduled_tickets;`))
+	r.id, r.status, r.tube, r.runat, r.nice, r.type, r.ctime, r.mtime, r.attempts, r.payload, r.error_reason,
+	c.ready_at
+FROM rescheduled_tickets r
+JOIN candidates c ON r.id = c.id;`))
 
 var expire = template.Must(template.New("expire").Parse(`-- name: ExpireTickets:
 DELETE FROM {{.TableName}}
-WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2);`))
+WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2)
+RETURNING id, type, tube;`))
 
 type Queries struct {
 	migrate string

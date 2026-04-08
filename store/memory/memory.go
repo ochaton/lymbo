@@ -64,14 +64,18 @@ func (m *Store) Delete(_ context.Context, id lymbo.TicketId) error {
 	return nil
 }
 
-func (m *Store) DeleteBatch(_ context.Context, ids []lymbo.TicketId) error {
+func (m *Store) DeleteBatch(_ context.Context, ids []lymbo.TicketId) ([]lymbo.TransitionInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	var infos []lymbo.TransitionInfo
 	for _, id := range ids {
-		delete(m.data, id)
+		if t, ok := m.data[id]; ok {
+			infos = append(infos, lymbo.TransitionInfo{Id: t.ID, Type: t.Type, Tube: t.Tube, Status: t.Status})
+			delete(m.data, id)
+		}
 	}
-	return nil
+	return infos, nil
 }
 
 func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
@@ -97,21 +101,23 @@ func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
 	}
 }
 
-func (m *Store) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) error {
+func (m *Store) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([]lymbo.TransitionInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	infos := make([]lymbo.TransitionInfo, 0, len(updates))
 	for _, us := range updates {
 		t, exists := m.data[us.Id]
 		if !exists {
-			return lymbo.ErrTicketNotFound
+			return nil, lymbo.ErrTicketNotFound
 		}
 
 		updateOne(&t, us)
 		m.data[t.ID] = t
+		infos = append(infos, lymbo.TransitionInfo{Id: t.ID, Type: t.Type, Tube: t.Tube, Status: t.Status})
 	}
 
-	return nil
+	return infos, nil
 }
 
 func (m *Store) Update(ctx context.Context, tid lymbo.TicketId, fn lymbo.UpdateFunc) error {
@@ -186,7 +192,9 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 	ready = ready[:min(req.Limit, len(ready))]
 
 	// Update tickets with exponential backoff for next attempt.
-	for _, t := range ready {
+	for i := range ready {
+		ready[i].ReadyAt = ready[i].Runat
+		t := ready[i]
 		delay := time.Duration(math.Pow(req.BackoffBase, float64(t.Attempts)) * float64(time.Second))
 		delay = min(delay, req.MaxBackoffDelay)
 		delay += req.TTR
@@ -202,13 +210,13 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 
 // ExpireTickets removes expired non-pending tickets from the store.
 // It deletes up to limit tickets that have expired (runat is before now).
-func (m *Store) ExpireTickets(_ context.Context, limit int, now time.Time) (int64, error) {
+func (m *Store) ExpireTickets(_ context.Context, limit int, now time.Time) ([]lymbo.TransitionInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	count := 0
+	var infos []lymbo.TransitionInfo
 	for tid, t := range m.data {
-		if count == limit {
+		if len(infos) == limit {
 			break
 		}
 
@@ -220,9 +228,9 @@ func (m *Store) ExpireTickets(_ context.Context, limit int, now time.Time) (int6
 			continue
 		}
 
+		infos = append(infos, lymbo.TransitionInfo{Id: t.ID, Type: t.Type, Tube: t.Tube, Status: t.Status})
 		delete(m.data, tid)
-		count++
 	}
 
-	return int64(count), nil
+	return infos, nil
 }
