@@ -47,6 +47,7 @@ type Ticket struct {
 	Attempts    int             // Number of processing attempts
 	Payload     json.RawMessage // Serialized payload data
 	ErrorReason json.RawMessage // Serialized error information if processing failed
+	ReadyAt     time.Time       // Original Runat before PollPending bumps it (in-memory only, not persisted)
 }
 
 var (

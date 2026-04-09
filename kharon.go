@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ochaton/lymbo/stats"
 	"github.com/ochaton/lymbo/status"
 	"golang.org/x/time/rate"
 )
@@ -39,8 +40,9 @@ const (
 var InfinityDelay = FixedDelay(100 * 365 * 24 * time.Hour)
 
 type msg struct {
-	tid TicketId
-	upd *UpdateSet
+	tid    TicketId
+	upd    *UpdateSet    // nil means delete
+	intent stats.Metric  // API-level operation (Ack, Fail, Retry, etc.)
 }
 
 // Kharon is the main orchestrator for the job processing system.
@@ -52,11 +54,11 @@ type Kharon struct {
 	income   chan *Ticket
 	outcome  chan msg
 
-	stats *stats
+	stats *stats.T
 }
 
 func (kh *Kharon) ResetStats() {
-	kh.stats.reset()
+	kh.stats.Reset()
 }
 
 // NewKharon creates a new Kharon instance with the provided store, settings, and logger.
@@ -77,13 +79,15 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 
 	s.normalize()
 
+	st := stats.New()
+
 	return &Kharon{
-		store:    store,
+		store:    newObservableStore(store, st),
 		settings: *s,
 		logger:   logger,
 		income:   make(chan *Ticket, s.workers),
 		outcome:  make(chan msg, 10*s.workers),
-		stats:    newStats(),
+		stats:    st,
 	}
 }
 
@@ -125,7 +129,7 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 	return nil
 }
 
-func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
+func (k *Kharon) save(ctx context.Context, tid TicketId, intent stats.Metric, o *Opts) error {
 	if o.update != nil {
 		return k.store.Update(ctx, tid, func(ctx context.Context, t *Ticket) error {
 			return beforeUpdate(ctx, t, o)
@@ -143,11 +147,9 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
 
 	switch o.delay.how {
 	case delayFixed:
-		// no-op
 		us.Runat = new(time.Time)
 		*us.Runat = time.Now().Add(o.delay.fixed.duration)
 	case delayExponential:
-		// exponential backoff support
 		us.Backoff = &DelayBackoff{
 			Base:     o.delay.exponential.base,
 			MaxDelay: o.delay.exponential.maxDelay,
@@ -158,16 +160,18 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, o *Opts) error {
 	}
 
 	k.outcome <- msg{
-		tid: tid,
-		upd: us,
+		tid:    tid,
+		upd:    us,
+		intent: intent,
 	}
 	return nil
 }
 
-func (k *Kharon) delete(_ context.Context, tid TicketId) error {
+func (k *Kharon) delete(_ context.Context, tid TicketId, intent stats.Metric) error {
 	k.outcome <- msg{
-		tid: tid,
-		upd: nil,
+		tid:    tid,
+		upd:    nil,
+		intent: intent,
 	}
 	return nil
 }
@@ -187,15 +191,11 @@ func (k *Kharon) Ack(ctx context.Context, tid TicketId, opts ...Option) error {
 		return err
 	}
 	if o.keep {
-		err = k.save(ctx, tid, o)
+		err = k.save(ctx, tid, stats.Ack, o)
 	} else {
-		err = k.delete(ctx, tid)
+		err = k.delete(ctx, tid, stats.Ack)
 	}
-	if err != nil {
-		return err
-	}
-	k.stats.acked.Add(1)
-	return nil
+	return err
 }
 
 // Done marks a ticket as successfully completed.
@@ -205,11 +205,7 @@ func (k *Kharon) Done(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	if err := k.save(ctx, tid, o); err != nil {
-		return err
-	}
-	k.stats.done.Add(1)
-	return nil
+	return k.save(ctx, tid, stats.Done, o)
 }
 
 // Cancel marks a ticket as cancelled.
@@ -219,15 +215,9 @@ func (k *Kharon) Cancel(ctx context.Context, tid TicketId, opts ...Option) error
 		return err
 	}
 	if o.keep {
-		err = k.save(ctx, tid, o)
-	} else {
-		err = k.delete(ctx, tid)
+		return k.save(ctx, tid, stats.Cancel, o)
 	}
-	if err != nil {
-		return err
-	}
-	k.stats.canceled.Add(1)
-	return nil
+	return k.delete(ctx, tid, stats.Cancel)
 }
 
 // Fail marks a ticket as failed.
@@ -236,11 +226,7 @@ func (k *Kharon) Fail(ctx context.Context, tid TicketId, opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	if err := k.save(ctx, tid, o); err != nil {
-		return err
-	}
-	k.stats.failed.Add(1)
-	return nil
+	return k.save(ctx, tid, stats.Fail, o)
 }
 
 // Restart schedules a ticket for immediate retry by setting its status to pending and runat to now.
@@ -249,11 +235,7 @@ func (k *Kharon) Restart(ctx context.Context, tid TicketId, opts ...Option) erro
 	if err != nil {
 		return err
 	}
-	if err := k.save(ctx, tid, o); err != nil {
-		return err
-	}
-	k.stats.scheduled.Add(1)
-	return nil
+	return k.save(ctx, tid, stats.Add, o)
 }
 
 // Retry schedules a ticket for retry with updated parameters.
@@ -262,12 +244,7 @@ func (k *Kharon) Retry(ctx context.Context, tid TicketId, opts ...Option) error 
 	if err != nil {
 		return err
 	}
-	// do not update status, it should be already 'pending'
-	if err := k.save(ctx, tid, o); err != nil {
-		return err
-	}
-	k.stats.retried.Add(1)
-	return nil
+	return k.save(ctx, tid, stats.Retry, o)
 }
 
 // Put adds a new ticket to the store with configured options.
@@ -279,20 +256,12 @@ func (k *Kharon) Put(ctx context.Context, t Ticket, opts ...Option) error {
 	if err := beforeUpdate(ctx, &t, o); err != nil {
 		return err
 	}
-	if err := k.store.Put(ctx, t); err != nil {
-		return err
-	}
-	k.stats.added.Add(1)
-	return nil
+	return k.store.Put(ctx, t)
 }
 
 // Delete removes a ticket from the store.
 func (k *Kharon) Delete(ctx context.Context, tid TicketId) error {
-	if err := k.store.Delete(ctx, tid); err != nil {
-		return err
-	}
-	k.stats.deleted.Add(1)
-	return nil
+	return k.store.Delete(ctx, tid)
 }
 
 // Get retrieves a ticket from the store.
@@ -300,7 +269,7 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 	return k.store.Get(ctx, tid)
 }
 
-func (k *Kharon) Stats() Stats {
+func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
 }
 
@@ -347,8 +316,8 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 // runWorker processes tickets from income channel.
 // Exits when ctx is cancelled.
 func (k *Kharon) runWorker(ctx context.Context, r *Router) {
-	k.stats.runningWorkers.Add(1)
-	defer k.stats.runningWorkers.Add(-1)
+	k.stats.IncWorkers()
+	defer k.stats.DecWorkers()
 	defer k.logger.DebugContext(ctx, "worker exiting")
 
 	for {
@@ -357,7 +326,6 @@ func (k *Kharon) runWorker(ctx context.Context, r *Router) {
 			return
 		case t := <-k.income:
 			k.processTicket(ctx, r, t)
-			k.stats.processed.Add(1)
 		}
 	}
 }
@@ -382,14 +350,23 @@ func (k *Kharon) runPusher(ctx context.Context) {
 			return
 		}
 
-		delIds := make([]TicketId, 0, len(batch))
-		upds := make([]UpdateSet, 0, len(batch))
+		type deleteMsg struct {
+			id     TicketId
+			intent stats.Metric
+		}
+		type updateMsg struct {
+			set    UpdateSet
+			intent stats.Metric
+		}
+
+		dels := make([]deleteMsg, 0, len(batch))
+		upds := make([]updateMsg, 0, len(batch))
 
 		for _, m := range batch {
 			if m.upd == nil {
-				delIds = append(delIds, m.tid)
+				dels = append(dels, deleteMsg{id: m.tid, intent: m.intent})
 			} else {
-				upds = append(upds, *m.upd)
+				upds = append(upds, updateMsg{set: *m.upd, intent: m.intent})
 			}
 		}
 		batch = batch[:0]
@@ -398,14 +375,34 @@ func (k *Kharon) runPusher(ctx context.Context) {
 			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), k.settings.shutdownFlushTimeout)
 			defer cancel()
 
-			if len(delIds) > 0 {
-				if err := k.store.DeleteBatch(flushCtx, delIds); err != nil {
+			if len(dels) > 0 {
+				delIds := make([]TicketId, len(dels))
+				intentByID := make(map[TicketId]stats.Metric, len(dels))
+				for i, d := range dels {
+					delIds[i] = d.id
+					intentByID[d.id] = d.intent
+				}
+				infos, err := k.store.DeleteBatch(flushCtx, delIds)
+				if err != nil {
 					k.logger.ErrorContext(flushCtx, "error deleting batch", "error", err)
+				}
+				for _, info := range infos {
+					k.stats.ByKey(info.Type, string(info.Tube)).Inc(intentByID[info.Id])
 				}
 			}
 			if len(upds) > 0 {
-				if err := k.store.UpdateBatch(flushCtx, upds); err != nil {
+				sets := make([]UpdateSet, len(upds))
+				intents := make([]stats.Metric, len(upds))
+				for i, u := range upds {
+					sets[i] = u.set
+					intents[i] = u.intent
+				}
+				infos, err := k.store.UpdateBatch(flushCtx, sets)
+				if err != nil {
 					k.logger.ErrorContext(flushCtx, "error updating batch", "error", err)
+				}
+				for i, info := range infos {
+					k.stats.ByKey(info.Type, string(info.Tube)).Inc(intents[i])
 				}
 			}
 		}
@@ -535,12 +532,13 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			}
 		}
 
-		k.stats.polled.Add(int64(len(result.Tickets)))
+		for _, t := range result.Tickets {
+			k.stats.ByKey(t.Type, t.Tube.String()).Inc(stats.Poll)
+		}
 
 		for _, t := range result.Tickets {
 			select {
 			case k.income <- &t:
-				k.stats.scheduled.Add(1)
 			case <-ctx.Done():
 				return 0
 			}
@@ -561,11 +559,10 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 			k.logger.DebugContext(ctx, "ticket expiration worker exiting")
 			return
 		case <-ticker.C:
-			if n, err := k.store.ExpireTickets(ctx, ExpirationBatchSize, time.Now()); err != nil {
+			if expired, err := k.store.ExpireTickets(ctx, ExpirationBatchSize, time.Now()); err != nil {
 				k.logger.ErrorContext(ctx, "error expiring tickets", "error", err)
-			} else if n > 0 {
-				k.stats.expired.Add(n)
-				k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", n)
+			} else if len(expired) > 0 {
+				k.logger.DebugContext(ctx, "ticket expiration run completed", "expired_count", len(expired))
 			}
 		}
 	}
@@ -573,6 +570,8 @@ func (k *Kharon) runExpirationWorker(ctx context.Context) {
 
 // processTicket processes a single ticket with the appropriate handler.
 func (k *Kharon) processTicket(ctx context.Context, r *Router, t *Ticket) {
+	s := time.Now()
+
 	handler := r.Handler(t)
 	defer func() {
 		if r := recover(); r != nil {
@@ -587,12 +586,19 @@ func (k *Kharon) processTicket(ctx context.Context, r *Router, t *Ticket) {
 
 	rctx, cancel := context.WithDeadline(ctx, t.Runat)
 	defer cancel()
+
+	k.stats.ObserveQueueWaitDuration(t.Type, t.Tube.String(), s.Sub(t.ReadyAt))
+
 	err := handler.ProcessTicket(rctx, t)
+	k.stats.ObserveTaskProcessDuration(t.Type, t.Tube.String(), time.Since(s))
+
 	if err != nil {
 		k.logger.ErrorContext(ctx, "error processing ticket",
 			"ticket_id", t.ID,
 			"type", t.Type,
 			"error", err,
 		)
+		return
 	}
+	k.stats.ByKey(t.Type, t.Tube.String()).Inc(stats.Process)
 }

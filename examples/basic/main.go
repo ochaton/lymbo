@@ -109,35 +109,14 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		var prev lymbo.Stats
-		ts := time.Now()
 		for {
 			select {
 			case <-ticker.C:
-				stats := kh.Stats()
+				snap := kh.Stats()
 				slog.InfoContext(ctx, "kharon stats",
-					"scheduled", stats.Scheduled,
-					"polled", stats.Polled,
-					"processed", stats.Processed,
-					"failed", stats.Failed,
-					"expired", stats.Expired,
+					"workers", snap.RunningWorkers,
+					"keys", len(snap.ByKey),
 				)
-				// Evaluate rates
-				interval := time.Since(ts).Seconds()
-				if interval > 0 {
-					slog.InfoContext(ctx, "kharon rates",
-						"schedule_rate", hRate(float64(stats.Scheduled-prev.Scheduled)/interval),
-						// "add_rate", hRate(float64(stats.Added-prev.Added)/interval),
-						"poll_rate", hRate(float64(stats.Polled-prev.Polled)/interval),
-						"ack_rate", hRate(float64(stats.Acked-prev.Acked)/interval),
-						// "done_rate", hRate(float64(stats.Done-prev.Done)/interval),
-						// "cancel_rate", hRate(float64(stats.Canceled-prev.Canceled)/interval),
-						"fail_rate", hRate(float64(stats.Failed-prev.Failed)/interval),
-						"expire_rate", hRate(float64(stats.Expired-prev.Expired)/interval),
-					)
-				}
-				ts = time.Now()
-				prev = stats
 			case <-ctx.Done():
 				return
 			}
@@ -436,14 +415,4 @@ func setupLogger() *slog.Logger {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	slog.SetDefault(logger)
 	return logger
-}
-
-func hRate(r float64) string {
-	if r > 1_000_000 {
-		return fmt.Sprintf("%.2fM/s", r/1_000_000)
-	}
-	if r > 1000 {
-		return fmt.Sprintf("%.2fk/s", r/1000)
-	}
-	return fmt.Sprintf("%.2f/s", r)
 }

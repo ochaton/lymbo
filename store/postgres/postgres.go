@@ -192,15 +192,15 @@ func (r *Tickets) Delete(ctx context.Context, id lymbo.TicketId) error {
 	return err
 }
 
-func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) error {
+func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) ([]lymbo.TransitionInfo, error) {
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 	ticketUUIDs := make([]uuid.UUID, 0, len(ids))
 	for _, id := range ids {
 		ticketUUID, err := uuid.Parse(id.String())
 		if err != nil {
-			return lymbo.ErrTicketIDInvalid
+			return nil, lymbo.ErrTicketIDInvalid
 		}
 		ticketUUIDs = append(ticketUUIDs, ticketUUID)
 	}
@@ -213,13 +213,24 @@ func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) error {
 	br := r.db.SendBatch(ctx, batch)
 	defer br.Close()
 
-	if _, err := br.Exec(); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+	var infos []lymbo.TransitionInfo
+	for range ticketUUIDs {
+		var id uuid.UUID
+		var ticketType, tube string
+		err := br.QueryRow().Scan(&id, &ticketType, &tube)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return infos, err
 		}
-		return err
+		infos = append(infos, lymbo.TransitionInfo{
+			Id:   lymbo.TicketId(id.String()),
+			Type: ticketType,
+			Tube: lymbo.Tube(tube),
+		})
 	}
-	return nil
+	return infos, nil
 }
 
 func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.UpdateFunc) error {
@@ -319,16 +330,16 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 	return tx.Commit(ctx)
 }
 
-func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) error {
+func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([]lymbo.TransitionInfo, error) {
 	if len(updates) == 0 {
-		return nil
+		return nil, nil
 	}
 	batch := &pgx.Batch{}
 
 	for _, us := range updates {
 		ticketUUID, err := uuid.Parse(us.Id.String())
 		if err != nil {
-			return lymbo.ErrTicketIDInvalid
+			return nil, lymbo.ErrTicketIDInvalid
 		}
 
 		var q string
@@ -396,12 +407,27 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) er
 	br := r.db.SendBatch(ctx, batch)
 	defer br.Close()
 
-	_, err := br.Exec()
-	if err != nil {
-		return err
+	var infos []lymbo.TransitionInfo
+	for range updates {
+		var id uuid.UUID
+		var ticketType, tube, statusStr string
+		err := br.QueryRow().Scan(&id, &ticketType, &tube, &statusStr)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return infos, err
+		}
+		s, _ := status.FromString(statusStr)
+		infos = append(infos, lymbo.TransitionInfo{
+			Id:     lymbo.TicketId(id.String()),
+			Type:   ticketType,
+			Tube:   lymbo.Tube(tube),
+			Status: s,
+		})
 	}
 
-	return nil
+	return infos, nil
 }
 
 type pollPendingParams struct {
@@ -485,6 +511,7 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 			attempts    int32
 			payload     json.RawMessage
 			errorReason json.RawMessage
+			readyAt     pgtype.Timestamptz
 		)
 
 		err := rows.Scan(
@@ -499,6 +526,7 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 			&attempts,
 			&payload,
 			&errorReason,
+			&readyAt,
 		)
 		if err != nil {
 			return lymbo.PollResult{}, err
@@ -524,6 +552,7 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 			Mtime:       mtimePtr,
 			Attempts:    int(attempts),
 			Payload:     payload,
+			ReadyAt:     readyAt.Time,
 			ErrorReason: errorReason,
 		})
 	}
@@ -537,13 +566,28 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 	}, nil
 }
 
-func (r *Tickets) ExpireTickets(ctx context.Context, limit int, now time.Time) (int64, error) {
-	res, err := r.db.Exec(ctx, r.queries.expire,
+func (r *Tickets) ExpireTickets(ctx context.Context, limit int, now time.Time) ([]lymbo.TransitionInfo, error) {
+	rows, err := r.db.Query(ctx, r.queries.expire,
 		pgtype.Timestamptz{Time: now, Valid: true},
 		int32(limit),
 	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected(), nil
+	defer rows.Close()
+
+	var infos []lymbo.TransitionInfo
+	for rows.Next() {
+		var id uuid.UUID
+		var ticketType, tube string
+		if err := rows.Scan(&id, &ticketType, &tube); err != nil {
+			return infos, err
+		}
+		infos = append(infos, lymbo.TransitionInfo{
+			Id:   lymbo.TicketId(id.String()),
+			Type: ticketType,
+			Tube: lymbo.Tube(tube),
+		})
+	}
+	return infos, rows.Err()
 }
