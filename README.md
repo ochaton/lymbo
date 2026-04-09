@@ -4,23 +4,25 @@ A Go library for delayed task processing and state reconciliation.
 
 ## Table of Contents
 
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-  - [Creating Tickets](#creating-tickets)
-  - [Handling Tickets](#handling-tickets)
-  - [Ticket Lifecycle](#ticket-lifecycle)
-  - [Options](#options)
-  - [Delay Strategies](#delay-strategies)
-- [Configuration](#configuration)
-- [Storage](#storage)
-  - [In-Memory](#in-memory)
-  - [PostgreSQL](#postgresql)
-  - [Custom Store](#custom-store)
-- [Prometheus Metrics](#prometheus-metrics)
-- [Examples](#examples)
-- [License](#license)
+- [Kharon](#kharon)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Installation](#installation)
+  - [Quick Start](#quick-start)
+  - [Usage](#usage)
+    - [Creating Tickets](#creating-tickets)
+    - [Handling Tickets](#handling-tickets)
+    - [Ticket Lifecycle](#ticket-lifecycle)
+    - [Options](#options)
+    - [Delay Strategies](#delay-strategies)
+  - [Configuration](#configuration)
+  - [Storage](#storage)
+    - [In-Memory](#in-memory)
+    - [PostgreSQL](#postgresql)
+    - [Custom Store](#custom-store)
+  - [Prometheus Metrics](#prometheus-metrics)
+  - [Examples](#examples)
+  - [License](#license)
 
 ## Features
 
@@ -146,7 +148,7 @@ kh.Cancel(ctx, id, lymbo.WithKeep(), lymbo.WithErrorReason("cancelled by user"))
 ### Options
 
 | Option | Description |
-|--------|-------------|
+| ------ | ----------- |
 | `WithDelay(DelayStrategy)` | Set processing delay or TTL for auto-removal |
 | `WithNice(n)` | Set priority (lower = higher) |
 | `WithKeep()` | Keep ticket in store instead of removing |
@@ -179,7 +181,7 @@ settings := lymbo.DefaultSettings().
 ```
 
 | Method | Default | Description |
-|--------|---------|-------------|
+| ------ | ------- | ----------- |
 | `WithWorkers(n)` | 4 | Concurrent ticket processors |
 | `WithBatchSize(n)` | 4 | Max tickets per poll (capped at workers) |
 | `WithProcessTime(d)` | 30s | TTR before re-poll |
@@ -264,16 +266,14 @@ reg.MustRegister(lymbo_prom.NewCollector(khPonger, prometheus.Labels{"kharon": "
 
 Exported metrics:
 
-| Metric                                         | Type      | Labels              | Description                        |
-| ---------------------------------------------- | --------- | ------------------- | ---------------------------------- |
-| `kharon_tickets_total`                         | counter   | `operation`         | Global operation counts            |
-| `kharon_tickets_by_type_total`                 | counter   | `operation`, `type` | Per ticket type operation counts   |
-| `kharon_tickets_by_tube_total`                 | counter   | `operation`, `tube` | Per tube operation counts          |
-| `kharon_workers_running`                       | gauge     | -                   | Current active worker goroutines   |
-| `kharon_task_process_duration_seconds`         | histogram | `type`              | Processing duration by ticket type |
-| `kharon_task_process_duration_by_tube_seconds` | histogram | `tube`              | Processing duration by tube        |
-| `kharon_queue_wait_duration_seconds`           | histogram | `type`              | Queue wait time by ticket type     |
-| `kharon_queue_wait_duration_by_tube_seconds`   | histogram | `tube`              | Queue wait time by tube            |
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `kharon_tickets_total` | counter | `operation`, `type`, `tube` | Ticket operation counts per (type, tube) pair |
+| `kharon_workers_running` | gauge | - | Current active worker goroutines |
+| `kharon_task_process_duration_seconds` | histogram | `type`, `tube` | Processing duration per (type, tube) pair |
+| `kharon_queue_wait_duration_seconds` | histogram | `type`, `tube` | Queue wait time per (type, tube) pair |
+
+Use `sum by (operation)` for global totals, `sum by (operation, type)` for per-type, `sum by (operation, tube)` for per-tube.
 
 A complete example with Docker Compose (Postgres + Prometheus + Grafana with pre-built dashboards) is in [examples/prometheus/](examples/prometheus/).
 

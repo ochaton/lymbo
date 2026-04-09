@@ -11,15 +11,30 @@ services:
       timeout: 2s
       retries: 10
 
-  kharon:
+  kharon-1:
     build:
       context: ../..
       dockerfile: examples/prometheus/Dockerfile
+    hostname: kharon-1
     environment:
       DB_DSN: "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable&pool_max_conns=16"
       LISTEN_ADDR: ":8080"
     ports:
-      - "8080:8080"
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kharon-2:
+    build:
+      context: ../..
+      dockerfile: examples/prometheus/Dockerfile
+    hostname: kharon-2
+    environment:
+      DB_DSN: "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable&pool_max_conns=16"
+      LISTEN_ADDR: ":8080"
+    ports:
+      - "8082:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,7 +46,8 @@ services:
     ports:
       - "9090:9090"
     depends_on:
-      - kharon
+      - kharon-1
+      - kharon-2
 
   grafana:
     image: grafana/grafana:11.6.0

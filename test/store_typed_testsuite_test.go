@@ -86,7 +86,7 @@ func (s *StoreTestSuite) TestBasicWorkflowTyped(t *testing.T) {
 	_, err = kh.Get(context.Background(), ticket.ID)
 	assert.ErrorIs(t, err, lymbo.ErrTicketNotFound, "ticket should be deleted after ack")
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Added)
 	assert.Equal(t, int64(1), stats.Acked)
 	assert.Equal(t, int64(1), stats.Processed)
@@ -155,7 +155,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategyTyped(t *testing.T) {
 	t.Logf("Total time for 4 attempts: %v", totalTime)
 	assert.Greater(t, totalTime, 3*time.Second, "total time should show exponential delays")
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Added)
 	assert.Equal(t, int64(3), stats.Retried)
 	assert.Equal(t, int64(1), stats.Acked)
@@ -261,7 +261,7 @@ func (s *StoreTestSuite) TestDoneKeepsTicketTyped(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ticket.ID, retrieved.ID)
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Done)
 }
 
@@ -320,7 +320,7 @@ func (s *StoreTestSuite) TestFailWithErrorReasonTyped(t *testing.T) {
 
 	assert.NotNil(t, retrieved.ErrorReason)
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Failed)
 }
 
@@ -365,7 +365,7 @@ func (s *StoreTestSuite) TestCancelRemovesTicketTyped(t *testing.T) {
 		return err == lymbo.ErrTicketNotFound
 	}, 1*time.Second, 10*time.Millisecond, "ticket should be deleted after cancel")
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Canceled)
 }
 
@@ -491,7 +491,7 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessingTyped(t *testing.T
 	t.Logf("Processed %d tickets in %v with %d workers", numTickets, duration, 4)
 	assert.Less(t, duration, 3*time.Second, "parallel processing should complete in reasonable time")
 
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(numTickets), stats.Added)
 	assert.GreaterOrEqual(t, stats.Processed, int64(numTickets))
 	assert.Equal(t, int64(numTickets), stats.Acked)

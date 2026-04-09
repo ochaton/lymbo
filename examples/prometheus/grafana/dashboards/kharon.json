@@ -20,7 +20,7 @@
         "defaults": { "unit": "ops", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
-      "targets": [{ "expr": "rate(kharon_tickets_total{operation=\"processed\"}[1m])", "refId": "A" }],
+      "targets": [{ "expr": "sum(rate(kharon_tickets_total{operation=\"processed\"}[1m]))", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
@@ -31,7 +31,7 @@
         "defaults": { "unit": "short", "noValue": "No data", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 7 }, { "color": "red", "value": 8 }] } }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
-      "targets": [{ "expr": "kharon_workers_running", "refId": "A" }],
+      "targets": [{ "expr": "sum by (kharon) (kharon_workers_running)", "legendFormat": "{{kharon}}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
@@ -105,8 +105,8 @@
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_total{operation=\"added\"}[1m])", "legendFormat": "added", "refId": "A" },
-        { "expr": "rate(kharon_tickets_total{operation=\"processed\"}[1m])", "legendFormat": "processed", "refId": "B" },
+        { "expr": "sum(rate(kharon_tickets_total{operation=\"added\"}[1m]))", "legendFormat": "added", "refId": "A" },
+        { "expr": "sum(rate(kharon_tickets_total{operation=\"processed\"}[1m]))", "legendFormat": "processed", "refId": "B" },
         { "expr": "sum(rate(kharon_tickets_total{operation=\"added\"}[1m])) - sum(rate(kharon_tickets_total{operation=\"processed\"}[1m]))", "legendFormat": "gap", "refId": "C" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
@@ -121,8 +121,8 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_by_type_total{operation=\"added\", type=~\"$type\"}[1m])", "legendFormat": "{{type}} added", "refId": "A" },
-        { "expr": "rate(kharon_tickets_by_type_total{operation=\"deleted\", type=~\"$type\"}[1m])", "legendFormat": "{{type}} processed", "refId": "B" }
+        { "expr": "sum by (type) (rate(kharon_tickets_total{operation=\"added\", type=~\"$type\"}[1m]))", "legendFormat": "{{type}} added", "refId": "A" },
+        { "expr": "sum by (type) (rate(kharon_tickets_total{operation=\"processed\", type=~\"$type\"}[1m]))", "legendFormat": "{{type}} processed", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -136,8 +136,8 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"added\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} added", "refId": "A" },
-        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"deleted\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} processed", "refId": "B" }
+        { "expr": "sum by (tube) (rate(kharon_tickets_total{operation=\"added\", tube=~\"$tube\"}[1m]))", "legendFormat": "{{tube}} added", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_tickets_total{operation=\"processed\", tube=~\"$tube\"}[1m]))", "legendFormat": "{{tube}} processed", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -155,8 +155,8 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"failed\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} failed", "refId": "A" },
-        { "expr": "rate(kharon_tickets_by_tube_total{operation=\"retried\", tube=~\"$tube\"}[1m])", "legendFormat": "{{tube}} retried", "refId": "B" }
+        { "expr": "sum by (tube) (rate(kharon_tickets_total{operation=\"failed\", tube=~\"$tube\"}[1m]))", "legendFormat": "{{tube}} failed", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_tickets_total{operation=\"retried\", tube=~\"$tube\"}[1m]))", "legendFormat": "{{tube}} retried", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -177,7 +177,7 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_by_type_total{operation=\"failed\", type=~\"$type\"}[1m])", "legendFormat": "{{type}}", "refId": "A" }
+        { "expr": "sum by (type) (rate(kharon_tickets_total{operation=\"failed\", type=~\"$type\"}[1m]))", "legendFormat": "{{type}}", "refId": "A" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -191,7 +191,7 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "rate(kharon_tickets_by_type_total{operation=\"retried\", type=~\"$type\"}[1m])", "legendFormat": "{{type}}", "refId": "A" }
+        { "expr": "sum by (type) (rate(kharon_tickets_total{operation=\"retried\", type=~\"$type\"}[1m]))", "legendFormat": "{{type}}", "refId": "A" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -226,7 +226,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "calculate": false, "yAxis": { "unit": "s" }, "color": { "scheme": "Spectral", "mode": "scheme", "steps": 64, "reverse": true }, "tooltip": { "show": true } },
-      "targets": [{ "expr": "sum by (le) (rate(kharon_task_process_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
+      "targets": [{ "expr": "sum by (le) (increase(kharon_task_process_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
 
@@ -260,7 +260,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "calculate": false, "yAxis": { "unit": "s" }, "color": { "scheme": "Blues", "mode": "scheme", "steps": 64 }, "tooltip": { "show": true } },
-      "targets": [{ "expr": "sum by (le) (rate(kharon_queue_wait_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
+      "targets": [{ "expr": "sum by (le) (increase(kharon_queue_wait_duration_seconds_bucket{type=~\"$type\"}[1m]))", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
@@ -276,8 +276,8 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_queue_wait_duration_by_tube_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
-        { "expr": "sum by (tube) (rate(kharon_queue_wait_duration_by_tube_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_queue_wait_duration_by_tube_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
+        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_queue_wait_duration_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_queue_wait_duration_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_queue_wait_duration_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -294,8 +294,8 @@
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_task_process_duration_by_tube_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
-        { "expr": "sum by (tube) (rate(kharon_task_process_duration_by_tube_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_task_process_duration_by_tube_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
+        { "expr": "histogram_quantile($percentile, sum by (le, tube) (rate(kharon_task_process_duration_seconds_bucket{tube=~\"$tube\"}[1m])))", "legendFormat": "{{tube}} p$percentile", "refId": "A" },
+        { "expr": "sum by (tube) (rate(kharon_task_process_duration_seconds_sum{tube=~\"$tube\"}[1m])) / clamp_min(sum by (tube) (rate(kharon_task_process_duration_seconds_count{tube=~\"$tube\"}[1m])), 0.001)", "legendFormat": "{{tube}} mean", "refId": "B" }
       ],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
@@ -314,7 +314,7 @@
         "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }
       },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [{ "expr": "rate(kharon_tickets_total[1m])", "legendFormat": "{{operation}}", "refId": "A" }],
+      "targets": [{ "expr": "sum by (operation) (rate(kharon_tickets_total[1m]))", "legendFormat": "{{operation}}", "refId": "A" }],
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
     },
     {
@@ -356,7 +356,7 @@
       },
       {
         "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
-        "definition": "label_values(kharon_tickets_by_type_total, type)",
+        "definition": "label_values(kharon_tickets_total, type)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
@@ -364,7 +364,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(kharon_tickets_by_type_total, type)",
+          "query": "label_values(kharon_tickets_total, type)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -374,7 +374,7 @@
       },
       {
         "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
-        "definition": "label_values(kharon_tickets_by_tube_total, tube)",
+        "definition": "label_values(kharon_tickets_total, tube)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
@@ -382,7 +382,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(kharon_tickets_by_tube_total, tube)",
+          "query": "label_values(kharon_tickets_total, tube)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,

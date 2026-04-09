@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/ochaton/lymbo"
-	"github.com/ochaton/lymbo/stats"
 	"github.com/ochaton/lymbo/store/memory"
 	"github.com/ochaton/lymbo/store/postgres"
 
@@ -110,30 +109,14 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		var prev stats.Stats
-		ts := time.Now()
 		for {
 			select {
 			case <-ticker.C:
-				stats := kh.Stats()
+				snap := kh.Stats()
 				slog.InfoContext(ctx, "kharon stats",
-					"polled", stats.Polled,
-					"processed", stats.Processed,
-					"failed", stats.Failed,
-					"expired", stats.Expired,
+					"workers", snap.RunningWorkers,
+					"keys", len(snap.ByKey),
 				)
-				// Evaluate rates
-				interval := time.Since(ts).Seconds()
-				if interval > 0 {
-					slog.InfoContext(ctx, "kharon rates",
-						"poll_rate", hRate(float64(stats.Polled-prev.Polled)/interval),
-						"ack_rate", hRate(float64(stats.Acked-prev.Acked)/interval),
-						"fail_rate", hRate(float64(stats.Failed-prev.Failed)/interval),
-						"expire_rate", hRate(float64(stats.Expired-prev.Expired)/interval),
-					)
-				}
-				ts = time.Now()
-				prev = stats
 			case <-ctx.Done():
 				return
 			}
@@ -432,14 +415,4 @@ func setupLogger() *slog.Logger {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	slog.SetDefault(logger)
 	return logger
-}
-
-func hRate(r float64) string {
-	if r > 1_000_000 {
-		return fmt.Sprintf("%.2fM/s", r/1_000_000)
-	}
-	if r > 1000 {
-		return fmt.Sprintf("%.2fk/s", r/1000)
-	}
-	return fmt.Sprintf("%.2f/s", r)
 }

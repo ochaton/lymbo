@@ -37,42 +37,22 @@ func NewCollector(sp StatsProvider, constLabels prom.Labels) prom.Collector {
 		ticketsDesc: prom.NewDesc(
 			"kharon_tickets_total",
 			"Cumulative count of ticket operations.",
-			[]string{"operation"}, constLabels,
-		),
-		ticketsTypedDesc: prom.NewDesc(
-			"kharon_tickets_by_type_total",
-			"Cumulative count of ticket operations per ticket type.",
-			[]string{"operation", "type"}, constLabels,
-		),
-		ticketsTubeDesc: prom.NewDesc(
-			"kharon_tickets_by_tube_total",
-			"Cumulative count of ticket operations per tube.",
-			[]string{"operation", "tube"}, constLabels,
+			[]string{"operation", "type", "tube"}, constLabels,
 		),
 		workersDesc: prom.NewDesc(
 			"kharon_workers_running",
 			"Current number of active worker goroutines.",
 			nil, constLabels,
 		),
-		durationByTypeDesc: prom.NewDesc(
+		processDurationDesc: prom.NewDesc(
 			"kharon_task_process_duration_seconds",
 			"Histogram of ticket processing durations.",
-			[]string{"type"}, constLabels,
+			[]string{"type", "tube"}, constLabels,
 		),
-		durationByTubeDesc: prom.NewDesc(
-			"kharon_task_process_duration_by_tube_seconds",
-			"Histogram of ticket processing durations by tube.",
-			[]string{"tube"}, constLabels,
-		),
-		queueWaitByTypeDesc: prom.NewDesc(
+		queueWaitDesc: prom.NewDesc(
 			"kharon_queue_wait_duration_seconds",
 			"Histogram of time tickets waited in queue before processing.",
-			[]string{"type"}, constLabels,
-		),
-		queueWaitByTubeDesc: prom.NewDesc(
-			"kharon_queue_wait_duration_by_tube_seconds",
-			"Histogram of time tickets waited in queue before processing, by tube.",
-			[]string{"tube"}, constLabels,
+			[]string{"type", "tube"}, constLabels,
 		),
 	}
 }
@@ -81,24 +61,16 @@ type collector struct {
 	sp StatsProvider
 
 	ticketsDesc         *prom.Desc
-	ticketsTypedDesc    *prom.Desc
-	ticketsTubeDesc     *prom.Desc
 	workersDesc         *prom.Desc
-	durationByTypeDesc  *prom.Desc
-	durationByTubeDesc  *prom.Desc
-	queueWaitByTypeDesc *prom.Desc
-	queueWaitByTubeDesc *prom.Desc
+	processDurationDesc *prom.Desc
+	queueWaitDesc       *prom.Desc
 }
 
 func (c *collector) Describe(ch chan<- *prom.Desc) {
 	ch <- c.ticketsDesc
-	ch <- c.ticketsTypedDesc
-	ch <- c.ticketsTubeDesc
 	ch <- c.workersDesc
-	ch <- c.durationByTypeDesc
-	ch <- c.durationByTubeDesc
-	ch <- c.queueWaitByTypeDesc
-	ch <- c.queueWaitByTubeDesc
+	ch <- c.processDurationDesc
+	ch <- c.queueWaitDesc
 }
 
 var operationCounters = []struct {
@@ -120,64 +92,31 @@ var operationCounters = []struct {
 func (c *collector) Collect(ch chan<- prom.Metric) {
 	snap := c.sp.Stats()
 
-	// Global counters
-	for _, op := range operationCounters {
-		v := op.get(snap.Measurements)
-		if v == 0 {
-			continue
-		}
-		ch <- prom.MustNewConstMetric(
-			c.ticketsDesc, prom.CounterValue, float64(v), op.label,
-		)
-	}
-
-	// Per-type counters
-	for ticketType, m := range snap.ByType {
+	// Per-(type, tube) counters and histograms
+	for key, m := range snap.ByKey {
 		for _, op := range operationCounters {
 			v := op.get(m)
 			if v == 0 {
 				continue
 			}
 			ch <- prom.MustNewConstMetric(
-				c.ticketsTypedDesc, prom.CounterValue, float64(v), op.label, ticketType,
+				c.ticketsDesc, prom.CounterValue, float64(v),
+				op.label, key.Type, key.Tube,
 			)
 		}
+		emitHistogram(c.processDurationDesc, m.TaskProcessDuration, key.Type, key.Tube, ch)
+		emitHistogram(c.queueWaitDesc, m.QueueWaitDuration, key.Type, key.Tube, ch)
 	}
 
-	// Per-tube counters
-	for tube, m := range snap.ByTube {
-		for _, op := range operationCounters {
-			v := op.get(m)
-			if v == 0 {
-				continue
-			}
-			ch <- prom.MustNewConstMetric(
-				c.ticketsTubeDesc, prom.CounterValue, float64(v), op.label, tube,
-			)
-		}
-	}
-
-	// Workers gauge
+	// Workers gauge (global, no type/tube)
 	ch <- prom.MustNewConstMetric(
 		c.workersDesc, prom.GaugeValue, float64(snap.RunningWorkers),
 	)
-
-	// Per-type histograms
-	for ticketType, m := range snap.ByType {
-		emitHistogram(c.durationByTypeDesc, m.TaskProcessDuration, ticketType, ch)
-		emitHistogram(c.queueWaitByTypeDesc, m.QueueWaitDuration, ticketType, ch)
-	}
-
-	// Per-tube histograms
-	for tube, m := range snap.ByTube {
-		emitHistogram(c.durationByTubeDesc, m.TaskProcessDuration, tube, ch)
-		emitHistogram(c.queueWaitByTubeDesc, m.QueueWaitDuration, tube, ch)
-	}
 }
 
 // emitHistogram converts an exponential HistogramSnapshot into classic
 // prometheus buckets. Upper bound for bucket index i: 2^((offset+i+1) / 2^scale).
-func emitHistogram(desc *prom.Desc, hs stats.HistogramSnapshot, ticketType string, ch chan<- prom.Metric) {
+func emitHistogram(desc *prom.Desc, hs stats.HistogramSnapshot, ticketType, tube string, ch chan<- prom.Metric) {
 	if hs.Count == 0 {
 		return
 	}
@@ -193,6 +132,6 @@ func emitHistogram(desc *prom.Desc, hs stats.HistogramSnapshot, ticketType strin
 	}
 
 	ch <- prom.MustNewConstHistogram(
-		desc, hs.Count, hs.SumSec, buckets, ticketType,
+		desc, hs.Count, hs.SumSec, buckets, ticketType, tube,
 	)
 }

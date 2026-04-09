@@ -105,7 +105,7 @@ func (s *StoreTestSuite) TestBasicWorkflow(t *testing.T) {
 	assert.ErrorIs(t, err, lymbo.ErrTicketNotFound, "ticket should be deleted after ack")
 
 	// Verify stats
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Added, "should have 1 added ticket")
 	assert.Equal(t, int64(1), stats.Acked, "should have 1 acked ticket")
 	assert.Equal(t, int64(1), stats.Processed, "should have 1 processed ticket")
@@ -224,8 +224,12 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	// Allow significant tolerance due to batching
 	assert.Greater(t, totalTime, 3*time.Second, "total time should show exponential delays")
 
+	// Wait for final batch flush
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+
 	// Verify stats
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Added)
 	assert.Equal(t, int64(3), stats.Retried)
 	assert.Equal(t, int64(1), stats.Acked)
@@ -346,7 +350,7 @@ func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
 	assert.Equal(t, ticket.ID, retrieved.ID)
 
 	// Verify stats
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Done)
 }
 
@@ -419,7 +423,7 @@ func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
 	assert.Contains(t, errorReasonStr, errorMsg, "error reason should contain the error message")
 
 	// Verify stats
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Failed)
 }
 
@@ -471,7 +475,7 @@ func (s *StoreTestSuite) TestCancelRemovesTicket(t *testing.T) {
 	}, 1*time.Second, 10*time.Millisecond, "ticket should be deleted after cancel")
 
 	// Verify stats
-	stats := kh.Stats()
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(1), stats.Canceled)
 }
 
@@ -667,7 +671,11 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 	assert.Less(t, duration, 3*time.Second,
 		"parallel processing should complete in reasonable time")
 
-	stats := kh.Stats()
+	// Wait for final batch flush
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	stats := kh.Stats().Total()
 	assert.Equal(t, int64(numTickets), stats.Added)
 	assert.GreaterOrEqual(t, stats.Processed, int64(numTickets))
 	assert.Equal(t, int64(numTickets), stats.Acked)

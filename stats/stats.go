@@ -22,19 +22,24 @@ const (
 	TaskProcessDuration
 )
 
+// Key identifies a (ticket type, tube) pair for per-key stats.
+type Key struct {
+	Type string
+	Tube string
+}
+
 // Measurers holds a set of counters and a histogram.
 type Measurers struct {
-	added          *counter
-	polled         *counter
-	acked          *counter
-	failed         *counter
-	done           *counter
-	retried        *counter
-	canceled       *counter
-	deleted        *counter
-	expired        *counter
-	processed      *counter
-	runningWorkers *counter
+	added     *counter
+	polled    *counter
+	acked     *counter
+	failed    *counter
+	done      *counter
+	retried   *counter
+	canceled  *counter
+	deleted   *counter
+	expired   *counter
+	processed *counter
 
 	taskProcessDuration *hist
 	queueWaitDuration   *hist
@@ -52,9 +57,8 @@ func newMeasurers() Measurers {
 		deleted:             newCounter(),
 		expired:             newCounter(),
 		processed:           newCounter(),
-		runningWorkers:      newCounter(),
-		taskProcessDuration: newHist(4),
-		queueWaitDuration:   newHist(4),
+		taskProcessDuration: newHist(2),
+		queueWaitDuration:   newHist(2),
 	}
 }
 
@@ -80,8 +84,6 @@ func (m *Measurers) lookup(met Metric) *counter {
 		return m.expired
 	case Process:
 		return m.processed
-	case Workers:
-		return m.runningWorkers
 	default:
 		return nil
 	}
@@ -105,115 +107,59 @@ func (m *Measurers) snapshot() Measurements {
 		Deleted:             m.deleted.Get(),
 		Expired:             m.expired.Get(),
 		Processed:           m.processed.Get(),
-		RunningWorkers:      m.runningWorkers.Get(),
 		TaskProcessDuration: m.taskProcessDuration.Snapshot(),
 		QueueWaitDuration:   m.queueWaitDuration.Snapshot(),
 	}
 }
 
-func (m *Measurers) reset() {
-	m.added.Reset()
-	m.polled.Reset()
-	m.acked.Reset()
-	m.failed.Reset()
-	m.done.Reset()
-	m.retried.Reset()
-	m.canceled.Reset()
-	m.deleted.Reset()
-	m.expired.Reset()
-	m.processed.Reset()
-	m.runningWorkers.Reset()
-	m.taskProcessDuration = newHist(4)
-	m.queueWaitDuration = newHist(4)
-}
-
 // T is the top-level stats container.
 type T struct {
 	rw sync.RWMutex
-	Measurers
 
-	byType map[string]*Measurers
-	byTube map[string]*Measurers
+	runningWorkers *counter
+	byKey          map[Key]*Measurers
 }
 
 func New() *T {
-	m := newMeasurers()
 	return &T{
-		Measurers: m,
-		byType:    make(map[string]*Measurers),
-		byTube:    make(map[string]*Measurers),
+		runningWorkers: newCounter(),
+		byKey:          make(map[Key]*Measurers),
 	}
 }
 
-func (s *T) Inc(met Metric) {
-	s.Add(met, 1)
+func (s *T) IncWorkers() {
+	s.rw.Lock()
+	defer s.rw.Unlock()
+	s.runningWorkers.Add(1)
 }
 
-func (s *T) Dec(met Metric) {
-	s.Add(met, -1)
+func (s *T) DecWorkers() {
+	s.rw.Lock()
+	defer s.rw.Unlock()
+	s.runningWorkers.Add(-1)
 }
 
-func (s *T) Add(met Metric, n int64) {
-	if c := s.Measurers.lookup(met); c != nil {
-		s.rw.Lock()
-		defer s.rw.Unlock()
-		c.Add(n)
-	}
-}
-
-func (s *T) Get(met Metric) int64 {
-	if c := s.Measurers.lookup(met); c != nil {
-		s.rw.RLock()
-		defer s.rw.RUnlock()
-		return c.Get()
-	}
-	return 0
-}
-
-// ByType returns the Measurers for the given ticket type, creating lazily.
-func (s *T) ByType(ticketType string) *Measurers {
+// ByKey returns the Measurers for the given (type, tube) pair, creating lazily.
+func (s *T) ByKey(ticketType, tube string) *Measurers {
 	s.rw.Lock()
 	defer s.rw.Unlock()
 
-	m, ok := s.byType[ticketType]
+	k := Key{Type: ticketType, Tube: tube}
+	m, ok := s.byKey[k]
 	if !ok {
 		n := newMeasurers()
 		m = &n
-		s.byType[ticketType] = m
+		s.byKey[k] = m
 	}
 	return m
 }
 
-// ByTube returns the Measurers for the given tube, creating lazily.
-func (s *T) ByTube(tube string) *Measurers {
-	s.rw.Lock()
-	defer s.rw.Unlock()
-
-	m, ok := s.byTube[tube]
-	if !ok {
-		n := newMeasurers()
-		m = &n
-		s.byTube[tube] = m
-	}
-	return m
+func (s *T) ObserveQueueWaitDuration(ticketType, tube string, duration time.Duration) {
+	s.ByKey(ticketType, tube).queueWaitDuration.RecordDuration(duration)
 }
 
-func (s *T) ObserveQueueWaitDuration(ticketType string, tube string, duration time.Duration) {
-	s.rw.Lock()
-	s.Measurers.queueWaitDuration.RecordDuration(duration)
-	s.rw.Unlock()
-
-	s.ByType(ticketType).queueWaitDuration.RecordDuration(duration)
-	s.ByTube(tube).queueWaitDuration.RecordDuration(duration)
-}
-
-func (s *T) ObserveTaskProcessDuration(ticketType string, tube string, duration time.Duration) {
-	s.rw.Lock()
-	s.Measurers.taskProcessDuration.RecordDuration(duration)
-	s.rw.Unlock()
-
-	s.ByType(ticketType).taskProcessDuration.RecordDuration(duration)
-	s.ByTube(tube).taskProcessDuration.RecordDuration(duration)
+func (s *T) ObserveTaskProcessDuration(ticketType, tube string, duration time.Duration) {
+	s.ByKey(ticketType, tube).taskProcessDuration.RecordDuration(duration)
 }
 
 func (s *T) Snapshot() Stats {
@@ -221,19 +167,13 @@ func (s *T) Snapshot() Stats {
 	defer s.rw.RUnlock()
 
 	snap := Stats{
-		Measurements: s.Measurers.snapshot(),
+		RunningWorkers: s.runningWorkers.Get(),
 	}
 
-	if len(s.byType) > 0 {
-		snap.ByType = make(map[string]Measurements, len(s.byType))
-		for k, m := range s.byType {
-			snap.ByType[k] = m.snapshot()
-		}
-	}
-	if len(s.byTube) > 0 {
-		snap.ByTube = make(map[string]Measurements, len(s.byTube))
-		for k, m := range s.byTube {
-			snap.ByTube[k] = m.snapshot()
+	if len(s.byKey) > 0 {
+		snap.ByKey = make(map[Key]Measurements, len(s.byKey))
+		for k, m := range s.byKey {
+			snap.ByKey[k] = m.snapshot()
 		}
 	}
 
@@ -244,32 +184,45 @@ func (s *T) Reset() {
 	s.rw.Lock()
 	defer s.rw.Unlock()
 
-	s.Measurers.reset()
-	s.byType = make(map[string]*Measurers)
-	s.byTube = make(map[string]*Measurers)
+	s.byKey = make(map[Key]*Measurers)
 }
 
-// Measurements holds counter and histogram values for a single scope (global, per-type, or per-tube).
+// Measurements holds counter and histogram values for a single (type, tube) scope.
 type Measurements struct {
-	Added          int64             `json:"added"`
-	Polled         int64             `json:"polled"`
-	Acked          int64             `json:"acked"`
-	Failed         int64             `json:"failed"`
-	Done           int64             `json:"done"`
-	Retried        int64             `json:"retried"`
-	Canceled       int64             `json:"canceled"`
-	Deleted        int64             `json:"deleted"`
-	Expired        int64             `json:"expired"`
-	Processed      int64             `json:"processed"`
-	RunningWorkers int64             `json:"runningWorkers"`
+	Added               int64             `json:"added"`
+	Polled              int64             `json:"polled"`
+	Acked               int64             `json:"acked"`
+	Failed              int64             `json:"failed"`
+	Done                int64             `json:"done"`
+	Retried             int64             `json:"retried"`
+	Canceled            int64             `json:"canceled"`
+	Deleted             int64             `json:"deleted"`
+	Expired             int64             `json:"expired"`
+	Processed           int64             `json:"processed"`
 	TaskProcessDuration HistogramSnapshot `json:"taskProcessDuration"`
 	QueueWaitDuration   HistogramSnapshot `json:"queueWaitDuration"`
 }
 
 // Stats is the top-level snapshot returned by T.Snapshot().
 type Stats struct {
-	Measurements
+	RunningWorkers int64                `json:"runningWorkers"`
+	ByKey          map[Key]Measurements `json:"byKey,omitempty"`
+}
 
-	ByType map[string]Measurements `json:"byType,omitempty"`
-	ByTube map[string]Measurements `json:"byTube,omitempty"`
+// Total aggregates all per-key measurements into a single Measurements.
+func (s Stats) Total() Measurements {
+	var t Measurements
+	for _, m := range s.ByKey {
+		t.Added += m.Added
+		t.Polled += m.Polled
+		t.Acked += m.Acked
+		t.Failed += m.Failed
+		t.Done += m.Done
+		t.Retried += m.Retried
+		t.Canceled += m.Canceled
+		t.Deleted += m.Deleted
+		t.Expired += m.Expired
+		t.Processed += m.Processed
+	}
+	return t
 }
