@@ -3,12 +3,10 @@ package stats
 import (
 	"fmt"
 	"math"
-	"sync"
 	"time"
 )
 
 type hist struct {
-	mu        sync.Mutex
 	scale     int32
 	count     uint64
 	sumSec    float64
@@ -32,9 +30,6 @@ func newHist(scale int32) *hist {
 }
 
 func (h *hist) Snapshot() HistogramSnapshot {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	out := HistogramSnapshot{
 		Count:     h.count,
 		SumSec:    h.sumSec,
@@ -84,9 +79,6 @@ func mapToIndex(x float64, scale int32) int32 {
 }
 
 func (h *hist) incBucket(idx int32) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if len(h.counts) == 0 {
 		h.offset = idx
 		h.counts = []uint64{1}

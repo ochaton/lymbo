@@ -29,7 +29,10 @@ type Key struct {
 }
 
 // Measurers holds a set of counters and a histogram.
+// All methods are safe for concurrent use.
 type Measurers struct {
+	mu sync.Mutex
+
 	added     *counter
 	polled    *counter
 	acked     *counter
@@ -90,12 +93,28 @@ func (m *Measurers) lookup(met Metric) *counter {
 }
 
 func (m *Measurers) Inc(met Metric) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if c := m.lookup(met); c != nil {
 		c.Add(1)
 	}
 }
 
+func (m *Measurers) RecordProcessDuration(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskProcessDuration.RecordDuration(d)
+}
+
+func (m *Measurers) RecordQueueWait(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queueWaitDuration.RecordDuration(d)
+}
+
 func (m *Measurers) snapshot() Measurements {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return Measurements{
 		Added:               m.added.Get(),
 		Polled:              m.polled.Get(),
@@ -155,11 +174,11 @@ func (s *T) ByKey(ticketType, tube string) *Measurers {
 }
 
 func (s *T) ObserveQueueWaitDuration(ticketType, tube string, duration time.Duration) {
-	s.ByKey(ticketType, tube).queueWaitDuration.RecordDuration(duration)
+	s.ByKey(ticketType, tube).RecordQueueWait(duration)
 }
 
 func (s *T) ObserveTaskProcessDuration(ticketType, tube string, duration time.Duration) {
-	s.ByKey(ticketType, tube).taskProcessDuration.RecordDuration(duration)
+	s.ByKey(ticketType, tube).RecordProcessDuration(duration)
 }
 
 func (s *T) Snapshot() Stats {
