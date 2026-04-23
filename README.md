@@ -15,6 +15,7 @@ A Go library for delayed task processing and state reconciliation.
     - [Ticket Lifecycle](#ticket-lifecycle)
     - [Options](#options)
     - [Delay Strategies](#delay-strategies)
+    - [Groups](#groups)
   - [Configuration](#configuration)
   - [Storage](#storage)
     - [In-Memory](#in-memory)
@@ -30,6 +31,7 @@ A Go library for delayed task processing and state reconciliation.
 - **Priority Scheduling**: Nice values (lower = higher priority)
 - **Retry Strategies**: Fixed delays or exponential backoff
 - **Tubes**: Route tickets to separate queues
+- **Groups**: Track batches of related tickets and query their collective progress
 - **Automatic Expiration**: Cleanup of completed/expired tickets
 - **Concurrent Processing**: Configurable worker pools
 - **Prometheus Metrics**: Per-type and per-tube counters, processing duration and queue wait histograms
@@ -155,6 +157,7 @@ kh.Cancel(ctx, id, lymbo.WithKeep(), lymbo.WithErrorReason("cancelled by user"))
 | `WithErrorReason(reason)` | Store error/cancellation reason |
 | `WithPayload(v)` | Set ticket payload |
 | `WithTube(tube)` | Transfer ticket to another tube |
+| `WithGroup(id)` | Assign or transfer ticket to a group |
 | `WithUpdate(fn)` | Custom ticket modification (executed last) |
 | `WithResetAttempts()` | Reset attempt counter |
 
@@ -168,6 +171,56 @@ lymbo.FixedDelay(5 * time.Minute)
 lymbo.BackoffDelay(1.5, 15*time.Second, 0)
 lymbo.BackoffDelay(2.0, time.Minute, 500*time.Millisecond)
 ```
+
+### Groups
+
+A group is a named set of tickets that can be tracked collectively. Submit tickets into a group
+with `WithGroup`, then poll the group to see how many are still pending or whether all have
+reached a terminal state (Done, Failed, or Cancelled).
+
+Groups are optional and persistent — the `group_id` is stored alongside each ticket so progress
+survives process restarts.
+
+```go
+// Create a group handle (lightweight, no DB write)
+g := kh.Group("order-42-notifications")
+
+// Submit tickets into the group
+for _, userID := range recipients {
+    ticket, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "send-notification")
+    kh.Put(ctx, *ticket,
+        lymbo.WithGroup(g.ID()),
+        lymbo.WithPayload(userID),
+    )
+}
+
+// Poll group progress from anywhere in your code
+n, err := g.PendingCount(ctx)   // tickets still pending
+ok, err := g.AllTerminal(ctx)   // true when none are pending
+```
+
+Alternatively, set the group directly on the ticket using the builder:
+
+```go
+ticket.WithGroup("order-42-notifications")
+kh.Put(ctx, *ticket)
+```
+
+**Transitioning between groups** works the same way as transferring tubes — pass `WithGroup` to
+any lifecycle method and the ticket moves to the new group atomically:
+
+```go
+// Move a ticket to a different group on retry
+kh.Retry(ctx, t.ID,
+    lymbo.WithGroup("retry-batch"),
+    lymbo.WithDelay(lymbo.FixedDelay(5*time.Minute)),
+)
+
+// Clear the group by moving to an empty-string group is not supported;
+// use a dedicated "archived" group name instead.
+```
+
+Tickets submitted without `WithGroup` are ungrouped and never appear in any group query.
 
 ## Configuration
 
@@ -238,6 +291,7 @@ type Store interface {
     UpdateBatch(ctx context.Context, updates []UpdateSet) ([]TransitionInfo, error)
     PollPending(context.Context, PollRequest) (PollResult, error)
     ExpireTickets(ctx context.Context, limit int, now time.Time) ([]TransitionInfo, error)
+    CountPendingInGroup(ctx context.Context, groupID string) (int, error)
 }
 ```
 

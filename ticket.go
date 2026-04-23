@@ -39,6 +39,7 @@ type Ticket struct {
 	ID          TicketId
 	Status      status.Status
 	Tube        Tube            // Optional tube/queue name for routing (default is "default")
+	GroupId     *string         // Optional group identifier; nil means no group
 	Runat       time.Time       // Time when the ticket should be processed
 	Nice        int             // Priority value (lower = higher priority)
 	Type        string          // Ticket type identifier for routing
@@ -127,5 +128,11 @@ func (t *Ticket) WithRunat(runat time.Time) *Ticket {
 // WithTube sets the tube/queue name for the ticket and returns the ticket.
 func (t *Ticket) WithTube(tube Tube) *Ticket {
 	t.Tube = tube
+	return t
+}
+
+// WithGroup sets the group identifier for the ticket and returns the ticket.
+func (t *Ticket) WithGroup(groupID string) *Ticket {
+	t.GroupId = &groupID
 	return t
 }

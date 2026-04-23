@@ -41,8 +41,8 @@ var InfinityDelay = FixedDelay(100 * 365 * 24 * time.Hour)
 
 type msg struct {
 	tid    TicketId
-	upd    *UpdateSet    // nil means delete
-	intent stats.Metric  // API-level operation (Ack, Fail, Retry, etc.)
+	upd    *UpdateSet   // nil means delete
+	intent stats.Metric // API-level operation (Ack, Fail, Retry, etc.)
 }
 
 // Kharon is the main orchestrator for the job processing system.
@@ -121,6 +121,9 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 	if o.transferTube != nil {
 		t.Tube = *o.transferTube
 	}
+	if o.groupID != nil {
+		t.GroupId = o.groupID
+	}
 	if o.update != nil {
 		if err := o.update(ctx, t); err != nil {
 			return err
@@ -139,6 +142,7 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, intent stats.Metric, o 
 	us := &UpdateSet{
 		Id:          tid,
 		Tube:        o.transferTube,
+		GroupId:     o.groupID,
 		Status:      o.status,
 		Nice:        o.nice,
 		Payload:     o.payload,
@@ -271,6 +275,11 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 
 func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
+}
+
+// Group returns a Group that associates tickets with the given identifier.
+func (k *Kharon) Group(id string) *Group {
+	return &Group{id: id, k: k}
 }
 
 // Run starts the Kharon job processing system with the given context and router.

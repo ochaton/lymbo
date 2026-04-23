@@ -28,6 +28,7 @@ type DelayBackoff struct {
 type UpdateSet struct {
 	Id          TicketId
 	Tube        *Tube
+	GroupId     *string
 	Status      *status.Status
 	Nice        *int
 	Runat       *time.Time
@@ -74,6 +75,9 @@ type Store interface {
 	// UpdateBatch modifies multiple tickets using the provided UpdateSets.
 	// Returns info about each updated ticket.
 	UpdateBatch(ctx context.Context, updates []UpdateSet) ([]TransitionInfo, error)
+
+	// CountPendingInGroup returns the number of pending tickets with the given group ID.
+	CountPendingInGroup(ctx context.Context, groupID string) (int, error)
 }
 
 // TransitionInfo describes a ticket that was affected by a store operation.

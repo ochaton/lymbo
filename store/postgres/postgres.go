@@ -175,6 +175,7 @@ func (r *Tickets) Put(ctx context.Context, ticket lymbo.Ticket) error {
 		ticket.Payload,
 		ticket.ErrorReason,
 		tube,
+		ticket.GroupId, // nil → SQL NULL; excluded from ON CONFLICT DO UPDATE SET
 	)
 	return err
 }
@@ -322,6 +323,8 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 		int32(ticket.Attempts),
 		updatedPayload,
 		updatedErrorReason,
+		ticket.Tube.String(),
+		nil, // group_id: excluded from ON CONFLICT DO UPDATE SET, so existing value is preserved
 	)
 	if err != nil {
 		return err
@@ -361,7 +364,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, sql.NullInt16{Valid: false})
 		}
 
-		// runat as $4, ...
+		// runat as $4 (update) or $4/$5/$6 (backoff)
 		switch {
 		case us.Backoff != nil:
 			q = r.queries.backoff
@@ -374,11 +377,11 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			q = r.queries.update
 			req = append(req, sql.NullTime{Time: *us.Runat, Valid: true})
 		default:
-			// do nothing, just instant retry
+			q = r.queries.update
 			req = append(req, sql.NullTime{Valid: false})
 		}
 
-		// payload as $5
+		// payload as $5 (update) or $7 (backoff)
 		switch {
 		case us.Payload != nil:
 			req = append(req, us.Payload)
@@ -386,7 +389,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, nil)
 		}
 
-		// error_reason as $6
+		// error_reason as $6 (update) or $8 (backoff)
 		switch {
 		case us.ErrorReason != nil:
 			req = append(req, us.ErrorReason)
@@ -394,9 +397,18 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, nil)
 		}
 
+		// tube as $7 (update) or $9 (backoff)
 		switch {
 		case us.Tube != nil:
 			req = append(req, string(*us.Tube))
+		default:
+			req = append(req, nil)
+		}
+
+		// group_id as $8 (update) or $10 (backoff)
+		switch {
+		case us.GroupId != nil:
+			req = append(req, *us.GroupId)
 		default:
 			req = append(req, nil)
 		}
@@ -564,6 +576,12 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 	return lymbo.PollResult{
 		Tickets: tickets,
 	}, nil
+}
+
+func (r *Tickets) CountPendingInGroup(ctx context.Context, groupID string) (int, error) {
+	var count int
+	err := r.db.QueryRow(ctx, r.queries.countPendingInGroup, groupID).Scan(&count)
+	return count, err
 }
 
 func (r *Tickets) ExpireTickets(ctx context.Context, limit int, now time.Time) ([]lymbo.TransitionInfo, error) {

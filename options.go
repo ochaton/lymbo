@@ -56,6 +56,9 @@ type Opts struct {
 	// transferTube indicates a tube to transfer the ticket to.
 	transferTube *Tube
 
+	// groupID associates the ticket with a group (effective only on Put).
+	groupID *string
+
 	// update allows custom modification of the ticket.
 	update func(ctx context.Context, t *Ticket) error
 }
@@ -140,6 +143,15 @@ func WithPayload(payload any) Option {
 			return fmt.Errorf("failed to marshal Payload: %w", err)
 		}
 		o.payload = v
+		return nil
+	}
+}
+
+// WithGroup associates the ticket with a group identifier.
+// Only effective when passed to Put; ignored by Ack, Done, Fail, etc.
+func WithGroup(groupID string) Option {
+	return func(o *Opts) error {
+		o.groupID = &groupID
 		return nil
 	}
 }
