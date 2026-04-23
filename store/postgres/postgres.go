@@ -212,7 +212,7 @@ func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) ([]lymb
 	}
 
 	br := r.db.SendBatch(ctx, batch)
-	defer br.Close()
+	defer br.Close() //nolint:errcheck
 
 	var infos []lymbo.TransitionInfo
 	for range ticketUUIDs {
@@ -244,7 +244,7 @@ func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.Update
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	var (
 		statusStr   string
@@ -417,7 +417,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 	}
 
 	br := r.db.SendBatch(ctx, batch)
-	defer br.Close()
+	defer br.Close() //nolint:errcheck
 
 	var infos []lymbo.TransitionInfo
 	for range updates {
