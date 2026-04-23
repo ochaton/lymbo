@@ -40,6 +40,11 @@ func (s *StoreTestSuite) RunAll(t *testing.T) {
 	t.Run("NotFoundHandler", s.TestNotFoundHandler)
 	t.Run("MultipleTicketsParallelProcessing", s.TestMultipleTicketsParallelProcessing)
 	t.Run("ExponentialBackoffMaxDelay", s.TestExponentialBackoffMaxDelay)
+	t.Run("GroupPendingCount", s.TestGroupPendingCount)
+	t.Run("GroupAllTerminal", s.TestGroupAllTerminal)
+	t.Run("GroupMixedStates", s.TestGroupMixedStates)
+	t.Run("GroupEmpty", s.TestGroupEmpty)
+	t.Run("GroupUngrouped", s.TestGroupUngrouped)
 }
 
 // TestBasicWorkflow tests the basic Put → Poll → Process → Acknowledge flow

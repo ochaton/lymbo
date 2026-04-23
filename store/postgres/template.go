@@ -34,6 +34,10 @@ CREATE INDEX IF NOT EXISTS idx_{{.TableName}}_pending_runat_nice ON {{.TableName
 WHERE status = 'pending';
 
 ALTER TABLE {{.TableName}} ADD COLUMN IF NOT EXISTS tube TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE {{.TableName}} ADD COLUMN IF NOT EXISTS group_id TEXT DEFAULT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_{{.TableName}}_group_pending ON {{.TableName}} (group_id)
+WHERE group_id IS NOT NULL AND status = 'pending';
 
 -- Create trigger function
 CREATE OR REPLACE FUNCTION {{.TableName}}_update_mtime()
@@ -64,8 +68,8 @@ FROM {{.TableName}}
 WHERE id = $1;`))
 
 var put = template.Must(template.New("put").Parse(`-- name: PutTicket:
-INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason, tube)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason, tube, group_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO UPDATE SET
 	status = EXCLUDED.status,
 	runat = EXCLUDED.runat,
@@ -88,7 +92,8 @@ SET
 	runat = COALESCE($4, runat),
 	payload = COALESCE($5, payload),
 	error_reason = COALESCE($6, error_reason),
-	tube = COALESCE($7, tube)
+	tube = COALESCE($7, tube),
+	group_id = COALESCE($8, group_id)
 WHERE id = $1
 RETURNING id, type, tube, status`))
 
@@ -101,7 +106,8 @@ SET
 	runat = now() + (GREATEST($4,0) + LEAST(POWER($5, attempts), $6)) * INTERVAL '1 second',
 	payload = COALESCE($7, payload),
 	error_reason = COALESCE($8, error_reason),
-	tube = COALESCE($9, tube)
+	tube = COALESCE($9, tube),
+	group_id = COALESCE($10, group_id)
 WHERE id = $1
 RETURNING id, type, tube, status`))
 
@@ -130,20 +136,25 @@ SELECT
 FROM rescheduled_tickets r
 JOIN candidates c ON r.id = c.id;`))
 
+var countPendingInGroup = template.Must(template.New("countPendingInGroup").Parse(`-- name: CountPendingInGroup:
+SELECT COUNT(*) FROM {{.TableName}}
+WHERE group_id = $1 AND status = 'pending';`))
+
 var expire = template.Must(template.New("expire").Parse(`-- name: ExpireTickets:
 DELETE FROM {{.TableName}}
 WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND t.runat <= $1 LIMIT $2)
 RETURNING id, type, tube;`))
 
 type Queries struct {
-	migrate string
-	get     string
-	put     string
-	delete  string
-	update  string
-	backoff string
-	poll    string
-	expire  string
+	migrate             string
+	get                 string
+	put                 string
+	delete              string
+	update              string
+	backoff             string
+	poll                string
+	expire              string
+	countPendingInGroup string
 }
 
 func newQueries(tableName string) (*Queries, error) {
@@ -184,6 +195,9 @@ func newQueries(tableName string) (*Queries, error) {
 	}
 	if qt.backoff, err = exec(backoff); err != nil {
 		return nil, fmt.Errorf("failed to execute template `backoff`: %w", err)
+	}
+	if qt.countPendingInGroup, err = exec(countPendingInGroup); err != nil {
+		return nil, fmt.Errorf("failed to execute template `countPendingInGroup`: %w", err)
 	}
 	return qt, nil
 }

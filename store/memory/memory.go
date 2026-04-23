@@ -79,6 +79,9 @@ func (m *Store) DeleteBatch(_ context.Context, ids []lymbo.TicketId) ([]lymbo.Tr
 }
 
 func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
+	if us.Status != nil {
+		t.Status = *us.Status
+	}
 	if us.Nice != nil {
 		t.Nice = *us.Nice
 	}
@@ -98,6 +101,9 @@ func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
 	}
 	if us.Tube != nil {
 		t.Tube = *us.Tube
+	}
+	if us.GroupId != nil {
+		t.GroupId = us.GroupId
 	}
 }
 
@@ -206,6 +212,20 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 	return lymbo.PollResult{
 		Tickets: ready,
 	}, nil
+}
+
+// CountPendingInGroup returns the number of pending tickets with the given group ID.
+func (m *Store) CountPendingInGroup(_ context.Context, groupID string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, t := range m.data {
+		if t.GroupId != nil && *t.GroupId == groupID && t.Status == status.Pending {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // ExpireTickets removes expired non-pending tickets from the store.
