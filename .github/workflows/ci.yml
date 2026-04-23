@@ -54,7 +54,6 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    continue-on-error: true  # Don't fail CI if lint has version issues
 
     steps:
     - name: Checkout code
@@ -65,12 +64,23 @@ jobs:
       with:
         go-version-file: 'go.mod'
 
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "The following files need gofmt:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Run go vet
+      run: go vet ./...
+
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v6
       with:
         version: latest
         args: --timeout=5m
-      continue-on-error: true  # Tolerate version mismatches
 
   build:
     name: Build

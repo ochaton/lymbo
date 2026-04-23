@@ -146,14 +146,14 @@ WHERE id IN (SELECT id FROM {{.TableName}} as t WHERE t.status != 'pending' AND 
 RETURNING id, type, tube;`))
 
 type Queries struct {
-	migrate            string
-	get                string
-	put                string
-	delete             string
-	update             string
-	backoff            string
-	poll               string
-	expire             string
+	migrate             string
+	get                 string
+	put                 string
+	delete              string
+	update              string
+	backoff             string
+	poll                string
+	expire              string
 	countPendingInGroup string
 }
 
