@@ -39,6 +39,13 @@ ALTER TABLE {{.TableName}} ADD COLUMN IF NOT EXISTS group_id TEXT DEFAULT NULL;
 CREATE INDEX IF NOT EXISTS idx_{{.TableName}}_group_pending ON {{.TableName}} (group_id)
 WHERE group_id IS NOT NULL AND status = 'pending';
 
+CREATE TABLE IF NOT EXISTS {{.TableName}}_deps (
+    ticket_id  UUID NOT NULL REFERENCES {{.TableName}}(id),
+    blocked_by UUID NOT NULL REFERENCES {{.TableName}}(id),
+    PRIMARY KEY (ticket_id, blocked_by)
+);
+CREATE INDEX IF NOT EXISTS idx_{{.TableName}}_deps_blocked_by ON {{.TableName}}_deps (blocked_by);
+
 -- Create trigger function
 CREATE OR REPLACE FUNCTION {{.TableName}}_update_mtime()
 RETURNS trigger AS $$
@@ -85,7 +92,12 @@ ON CONFLICT (id) DO UPDATE SET
 var delete = template.Must(template.New("delete").Parse(`-- name: DeleteTicket:
 DELETE FROM {{.TableName}} WHERE id = $1 RETURNING id, type, tube`))
 
-var update = template.Must(template.New("update").Parse(`UPDATE {{.TableName}}
+var update = template.Must(template.New("update").Parse(`WITH del_deps AS (
+	DELETE FROM {{.TableName}}_deps
+	WHERE blocked_by = $1
+	  AND $2 IN ('done'::ticket_status, 'failed'::ticket_status, 'cancelled'::ticket_status)
+)
+UPDATE {{.TableName}}
 SET
 	status = COALESCE($2, status),
 	nice = COALESCE($3, nice),
@@ -99,6 +111,11 @@ RETURNING id, type, tube, status`))
 
 // runat = now() + {jitter} + min(pow({base}, attempt), {max})
 var backoff = template.Must(template.New("backoff").Parse(`-- name: BackoffTicket:
+WITH del_deps AS (
+	DELETE FROM {{.TableName}}_deps
+	WHERE blocked_by = $1
+	  AND $2 IN ('done'::ticket_status, 'failed'::ticket_status, 'cancelled'::ticket_status)
+)
 UPDATE {{.TableName}}
 SET
 	status = COALESCE($2, status),
@@ -115,26 +132,49 @@ RETURNING id, type, tube, status`))
 var poll = template.Must(template.New("poll").Parse(`-- name: PollTickets:
 WITH candidates AS (
 	SELECT t.id, t.runat AS ready_at
-	FROM {{.TableName}} as t
-	WHERE t.status = 'pending' AND t.runat <= $1::Timestamptz AND t.tube = ANY($7::text[])
+	FROM {{.TableName}} AS t
+	WHERE t.status = 'pending'
+	  AND t.runat <= $1::Timestamptz
+	  AND t.tube = ANY($7::text[])
+	  AND NOT EXISTS (
+	      SELECT 1 FROM {{.TableName}}_deps d WHERE d.ticket_id = t.id LIMIT 1
+	  )
 	LIMIT $6
 	FOR UPDATE SKIP LOCKED
-),
-rescheduled_tickets AS (
-	UPDATE {{.TableName}} as t
-	SET
-		attempts = attempts + 1,
-		runat = $1::Timestamptz +
-			(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
-			* INTERVAL '1 second'
-	WHERE id IN (SELECT id FROM candidates)
-	RETURNING id, status, tube, runat, nice, type, ctime, mtime, attempts, payload, error_reason
 )
-SELECT
-	r.id, r.status, r.tube, r.runat, r.nice, r.type, r.ctime, r.mtime, r.attempts, r.payload, r.error_reason,
-	c.ready_at
-FROM rescheduled_tickets r
-JOIN candidates c ON r.id = c.id;`))
+UPDATE {{.TableName}} AS t
+SET
+	attempts = attempts + 1,
+	runat = $1::Timestamptz +
+		(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
+		* INTERVAL '1 second'
+FROM candidates c
+WHERE t.id = c.id
+RETURNING
+	t.id, t.status, t.tube, t.runat, t.nice, t.type,
+	t.ctime, t.mtime, t.attempts, t.payload, t.error_reason,
+	c.ready_at;`))
+
+var putAfterGroup = template.Must(template.New("putAfterGroup").Parse(`-- name: PutAfterGroup:
+WITH inserted AS (
+	INSERT INTO {{.TableName}} (id, status, runat, nice, type, ctime, mtime, attempts, payload, error_reason, tube, group_id)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	ON CONFLICT (id) DO NOTHING
+	RETURNING id
+)
+INSERT INTO {{.TableName}}_deps (ticket_id, blocked_by)
+SELECT $1, t.id
+FROM {{.TableName}} t
+WHERE t.group_id = $13 AND t.status = 'pending' AND t.id != $1
+  AND EXISTS (SELECT 1 FROM inserted)
+ON CONFLICT DO NOTHING;`))
+
+var deleteBatch = template.Must(template.New("deleteBatch").Parse(`-- name: DeleteBatch:
+WITH del_deps AS (
+	DELETE FROM {{.TableName}}_deps
+	WHERE ticket_id = ANY($1::uuid[]) OR blocked_by = ANY($1::uuid[])
+)
+DELETE FROM {{.TableName}} WHERE id = ANY($1::uuid[]) RETURNING id, type, tube`))
 
 var countPendingInGroup = template.Must(template.New("countPendingInGroup").Parse(`-- name: CountPendingInGroup:
 SELECT COUNT(*) FROM {{.TableName}}
@@ -150,6 +190,8 @@ type Queries struct {
 	get                 string
 	put                 string
 	delete              string
+	deleteBatch         string
+	putAfterGroup       string
 	update              string
 	backoff             string
 	poll                string
@@ -183,6 +225,12 @@ func newQueries(tableName string) (*Queries, error) {
 	}
 	if qt.delete, err = exec(delete); err != nil {
 		return nil, fmt.Errorf("failed to execute template `delete`: %w", err)
+	}
+	if qt.deleteBatch, err = exec(deleteBatch); err != nil {
+		return nil, fmt.Errorf("failed to execute template `deleteBatch`: %w", err)
+	}
+	if qt.putAfterGroup, err = exec(putAfterGroup); err != nil {
+		return nil, fmt.Errorf("failed to execute template `putAfterGroup`: %w", err)
 	}
 	if qt.update, err = exec(update); err != nil {
 		return nil, fmt.Errorf("failed to execute template `update`: %w", err)

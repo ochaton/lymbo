@@ -257,8 +257,14 @@ func (k *Kharon) Put(ctx context.Context, t Ticket, opts ...Option) error {
 	if err != nil {
 		return err
 	}
+	if o.afterGroup != nil && o.groupID != nil && *o.afterGroup == *o.groupID {
+		return ErrFinalizerInGroup
+	}
 	if err := beforeUpdate(ctx, &t, o); err != nil {
 		return err
+	}
+	if o.afterGroup != nil {
+		return k.store.PutAfterGroup(ctx, t, *o.afterGroup)
 	}
 	return k.store.Put(ctx, t)
 }

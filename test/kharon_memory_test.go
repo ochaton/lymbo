@@ -21,3 +21,9 @@ func TestMemoryStore(t *testing.T) {
 	suite := NewStoreTestSuite(memoryStoreFactory)
 	suite.RunAll(t)
 }
+
+// TestMemoryFinalizer runs the finalizer test suite against the memory store
+func TestMemoryFinalizer(t *testing.T) {
+	suite := NewFinalizerTestSuite(memoryStoreFactory)
+	suite.RunAll(t)
+}

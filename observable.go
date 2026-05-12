@@ -26,6 +26,14 @@ func (o *observableStore) Put(ctx context.Context, t Ticket) error {
 	return nil
 }
 
+func (o *observableStore) PutAfterGroup(ctx context.Context, t Ticket, groupID string) error {
+	if err := o.Store.PutAfterGroup(ctx, t, groupID); err != nil {
+		return err
+	}
+	o.stats.ByKey(t.Type, t.Tube.String()).Inc(stats.Add)
+	return nil
+}
+
 func (o *observableStore) ExpireTickets(ctx context.Context, limit int, now time.Time) ([]TransitionInfo, error) {
 	infos, err := o.Store.ExpireTickets(ctx, limit, now)
 	if err != nil {

@@ -16,6 +16,7 @@ A Go library for delayed task processing and state reconciliation.
     - [Options](#options)
     - [Delay Strategies](#delay-strategies)
     - [Groups](#groups)
+    - [Finalizers](#finalizers)
   - [Configuration](#configuration)
   - [Storage](#storage)
     - [In-Memory](#in-memory)
@@ -32,6 +33,7 @@ A Go library for delayed task processing and state reconciliation.
 - **Retry Strategies**: Fixed delays or exponential backoff
 - **Tubes**: Route tickets to separate queues
 - **Groups**: Track batches of related tickets and query their collective progress
+- **Finalizers**: Run a ticket automatically after all members of a group have finished
 - **Automatic Expiration**: Cleanup of completed/expired tickets
 - **Concurrent Processing**: Configurable worker pools
 - **Prometheus Metrics**: Per-type and per-tube counters, processing duration and queue wait histograms
@@ -160,6 +162,7 @@ kh.Cancel(ctx, id, lymbo.WithKeep(), lymbo.WithErrorReason("cancelled by user"))
 | `WithGroup(id)` | Assign or transfer ticket to a group |
 | `WithUpdate(fn)` | Custom ticket modification (executed last) |
 | `WithResetAttempts()` | Reset attempt counter |
+| `AfterGroup(id)` | Register ticket as finalizer for a group (blocked until all current members finish) |
 
 ### Delay Strategies
 
@@ -221,6 +224,34 @@ kh.Retry(ctx, t.ID,
 ```
 
 Tickets submitted without `WithGroup` are ungrouped and never appear in any group query.
+
+### Finalizers
+
+A finalizer is a ticket blocked until every pending member of a group has finished. Submit group
+members first, then submit the finalizer with `AfterGroup`:
+
+```go
+groupID := "order-42-notifications"
+
+for _, userID := range recipients {
+    ticket, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "send-notification")
+    kh.Put(ctx, *ticket, lymbo.WithGroup(groupID), lymbo.WithPayload(userID))
+}
+
+finalizer, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "notifications-complete")
+kh.Put(ctx, *finalizer, lymbo.AfterGroup(groupID))
+```
+
+At submission time, the store snapshots all currently pending group members as dependencies.
+The finalizer is invisible to workers until every captured dependency reaches a terminal state.
+Tickets added to the group after the finalizer is submitted are not captured.
+
+Notes:
+
+- Empty group (no pending members) → finalizer is immediately eligible.
+- `WithDelay` on the finalizer is evaluated independently of dependencies.
+- `AfterGroup("g")` + `WithGroup("g")` on the same `Put` returns `ErrFinalizerInGroup`.
+- Re-submitting a finalizer with the same ID is a no-op.
 
 ## Configuration
 
@@ -292,6 +323,7 @@ type Store interface {
     PollPending(context.Context, PollRequest) (PollResult, error)
     ExpireTickets(ctx context.Context, limit int, now time.Time) ([]TransitionInfo, error)
     CountPendingInGroup(ctx context.Context, groupID string) (int, error)
+    PutAfterGroup(ctx context.Context, ticket Ticket, groupID string) error
 }
 ```
 

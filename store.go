@@ -78,6 +78,12 @@ type Store interface {
 
 	// CountPendingInGroup returns the number of pending tickets with the given group ID.
 	CountPendingInGroup(ctx context.Context, groupID string) (int, error)
+
+	// PutAfterGroup atomically inserts the ticket and wires it as a finalizer for groupID.
+	// It scans all currently pending group members and creates dep rows blocking the finalizer.
+	// Returns nil if the ticket ID already exists (idempotent re-submission).
+	// Returns ErrFinalizerInGroup if the ticket belongs to the same group it finalizes.
+	PutAfterGroup(ctx context.Context, ticket Ticket, groupID string) error
 }
 
 // TransitionInfo describes a ticket that was affected by a store operation.
