@@ -59,6 +59,9 @@ type Opts struct {
 	// groupID associates the ticket with a group (effective only on Put).
 	groupID *string
 
+	// afterGroup wires the ticket as a finalizer for the given group (effective only on Put).
+	afterGroup *string
+
 	// update allows custom modification of the ticket.
 	update func(ctx context.Context, t *Ticket) error
 }
@@ -152,6 +155,16 @@ func WithPayload(payload any) Option {
 func WithGroup(groupID string) Option {
 	return func(o *Opts) error {
 		o.groupID = &groupID
+		return nil
+	}
+}
+
+// AfterGroup wires the ticket as a finalizer for groupID.
+// The finalizer is blocked until all currently pending group members reach a terminal state.
+// Only effective when passed to Put.
+func AfterGroup(groupID string) Option {
+	return func(o *Opts) error {
+		o.afterGroup = &groupID
 		return nil
 	}
 }

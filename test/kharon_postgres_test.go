@@ -55,11 +55,14 @@ func TestPostgresStore(t *testing.T) {
 	// Factory reuses the shared pool; truncates the table for test isolation
 	factory := func(t *testing.T) (lymbo.Store, func()) {
 		t.Helper()
-		_, err := pool.Exec(context.Background(), "TRUNCATE tickets")
+		_, err := pool.Exec(context.Background(), "TRUNCATE tickets CASCADE")
 		require.NoError(t, err)
 		return store, func() {}
 	}
 
 	suite := NewStoreTestSuite(factory)
 	suite.RunAll(t)
+
+	finalizerSuite := NewFinalizerTestSuite(factory)
+	finalizerSuite.RunAll(t)
 }

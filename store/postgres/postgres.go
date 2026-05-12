@@ -206,23 +206,17 @@ func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) ([]lymb
 		ticketUUIDs = append(ticketUUIDs, ticketUUID)
 	}
 
-	batch := &pgx.Batch{}
-	for _, ticketUUID := range ticketUUIDs {
-		batch.Queue(r.queries.delete, ticketUUID)
+	rows, err := r.db.Query(ctx, r.queries.deleteBatch, ticketUUIDs)
+	if err != nil {
+		return nil, err
 	}
-
-	br := r.db.SendBatch(ctx, batch)
-	defer br.Close() //nolint:errcheck
+	defer rows.Close()
 
 	var infos []lymbo.TransitionInfo
-	for range ticketUUIDs {
+	for rows.Next() {
 		var id uuid.UUID
 		var ticketType, tube string
-		err := br.QueryRow().Scan(&id, &ticketType, &tube)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
+		if err := rows.Scan(&id, &ticketType, &tube); err != nil {
 			return infos, err
 		}
 		infos = append(infos, lymbo.TransitionInfo{
@@ -231,7 +225,7 @@ func (r *Tickets) DeleteBatch(ctx context.Context, ids []lymbo.TicketId) ([]lymb
 			Tube: lymbo.Tube(tube),
 		})
 	}
-	return infos, nil
+	return infos, rows.Err()
 }
 
 func (r *Tickets) Update(ctx context.Context, id lymbo.TicketId, fn lymbo.UpdateFunc) error {
@@ -337,6 +331,9 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 	if len(updates) == 0 {
 		return nil, nil
 	}
+
+	// Dep rows for terminal transitions are deleted atomically inside the update/backoff
+	// query templates via a CTE (REQ 3). No explicit transaction needed here.
 	batch := &pgx.Batch{}
 
 	for _, us := range updates {
@@ -348,7 +345,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 		var q string
 		req := []any{ticketUUID}
 
-		// status as  $2
+		// status as $2
 		switch {
 		case us.Status != nil:
 			req = append(req, sql.NullString{String: us.Status.String(), Valid: true})
@@ -437,6 +434,9 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			Tube:   lymbo.Tube(tube),
 			Status: s,
 		})
+	}
+	if err := br.Close(); err != nil {
+		return infos, err
 	}
 
 	return infos, nil
@@ -576,6 +576,39 @@ func (r *Tickets) PollPending(ctx context.Context, req lymbo.PollRequest) (lymbo
 	return lymbo.PollResult{
 		Tickets: tickets,
 	}, nil
+}
+
+func (r *Tickets) PutAfterGroup(ctx context.Context, ticket lymbo.Ticket, groupID string) error {
+	ticketUUID, err := uuid.Parse(ticket.ID.String())
+	if err != nil {
+		return lymbo.ErrTicketIDInvalid
+	}
+
+	var mtime pgtype.Timestamptz
+	if ticket.Mtime != nil {
+		mtime = pgtype.Timestamptz{Time: *ticket.Mtime, Valid: true}
+	}
+	tube := ticket.Tube.String()
+	if tube == "" {
+		tube = "default"
+	}
+
+	_, err = r.db.Exec(ctx, r.queries.putAfterGroup,
+		ticketUUID,             // $1  id
+		ticket.Status.String(), // $2  status
+		pgtype.Timestamptz{Time: ticket.Runat, Valid: true}, // $3  runat
+		int16(ticket.Nice), // $4  nice
+		ticket.Type,        // $5  type
+		pgtype.Timestamptz{Time: ticket.Ctime, Valid: true}, // $6  ctime
+		mtime,                  // $7  mtime
+		int32(ticket.Attempts), // $8  attempts
+		ticket.Payload,         // $9  payload
+		ticket.ErrorReason,     // $10 error_reason
+		tube,                   // $11 tube
+		ticket.GroupId,         // $12 group_id (finalizer's own group, may be nil)
+		groupID,                // $13 group to wait for
+	)
+	return err
 }
 
 func (r *Tickets) CountPendingInGroup(ctx context.Context, groupID string) (int, error) {

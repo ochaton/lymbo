@@ -10,4 +10,5 @@ var (
 	ErrTicketIDInvalid         = errors.New("ticket ID is invalid")
 	ErrTicketNotFound          = errors.New("ticket not found")
 	ErrInvalidStatusTransition = errors.New("invalid status transition")
+	ErrFinalizerInGroup        = errors.New("finalizer must not be a member of the group it finalizes")
 )
