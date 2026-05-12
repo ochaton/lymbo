@@ -346,8 +346,10 @@ func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
 		return processed.Load()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Wait for batch flush
-	time.Sleep(200 * time.Millisecond)
+	// Wait for batch flush + stats increment (happens after DB UpdateBatch)
+	require.Eventually(t, func() bool {
+		return kh.Stats().Total().Done == 1
+	}, 5*time.Second, 10*time.Millisecond, "stats.Done should reach 1 after batch flush")
 
 	// Verify ticket still exists
 	retrieved, err := kh.Get(ctx, ticket.ID)
