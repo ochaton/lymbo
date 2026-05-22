@@ -78,7 +78,7 @@ func NewTicketsRepositoryWithConfig(cfg Config) (*Tickets, error) {
 // Migrate runs the embedded migrations to set up the database schema
 // All migrations are executed in a single transaction to ensure atomicity
 func (r *Tickets) Migrate(ctx context.Context) error {
-	slog.InfoContext(ctx, "Applying migration", "sql", r.queries.migrate)
+	slog.InfoContext(ctx, "Applying migration")
 	_, err := r.db.Exec(ctx, r.queries.migrate)
 	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
