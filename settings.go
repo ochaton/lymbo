@@ -131,8 +131,16 @@ func (s *Settings) WithFlushInterval(d time.Duration) *Settings {
 
 // WithTubes sets the tubes for Kharon to work with.
 // If no tubes are provided, it defaults to the "default" tube.
+// Empty tube names are dropped. Duplicates are removed.
 func (s *Settings) WithOnlyTubes(tubes ...Tube) *Settings {
-	s.tubes = slices.Compact(tubes)
+	out := tubes[:0]
+	for _, t := range tubes {
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	slices.Sort(out)
+	s.tubes = slices.Compact(out)
 	return s
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -54,6 +56,9 @@ type Kharon struct {
 	income   chan *Ticket
 	outcome  chan msg
 
+	tubeRW sync.RWMutex
+	tubes  []Tube
+
 	stats *stats.T
 }
 
@@ -85,6 +90,7 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 		store:    newObservableStore(store, st),
 		settings: *s,
 		logger:   logger,
+		tubes:    s.tubes,
 		income:   make(chan *Ticket, s.workers),
 		outcome:  make(chan msg, 10*s.workers),
 		stats:    st,
@@ -281,6 +287,41 @@ func (k *Kharon) Get(ctx context.Context, tid TicketId) (Ticket, error) {
 
 func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
+}
+
+func (k *Kharon) Subscribe(addTubes []string) {
+	add := make(map[Tube]struct{}, len(addTubes))
+	for _, v := range addTubes {
+		if v == "" {
+			continue
+		}
+		add[Tube(v)] = struct{}{}
+	}
+
+	k.tubeRW.Lock()
+	defer k.tubeRW.Unlock()
+
+	for _, e := range k.tubes {
+		delete(add, e)
+	}
+	for a := range add {
+		k.tubes = append(k.tubes, a)
+	}
+}
+
+func (k *Kharon) Unsubscribe(delTubes []string) {
+	del := make(map[Tube]struct{}, len(delTubes))
+	for _, v := range delTubes {
+		del[Tube(v)] = struct{}{}
+	}
+
+	k.tubeRW.Lock()
+	defer k.tubeRW.Unlock()
+
+	k.tubes = slices.DeleteFunc(k.tubes, func(t Tube) bool {
+		_, ok := del[t]
+		return ok
+	})
 }
 
 // Group returns a Group that associates tickets with the given identifier.
@@ -499,6 +540,8 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			// and for x=inf+ gives maxReactionDelay
 			// but not linear.
 			sleep := mn + (mx-mn)*(1-math.Exp2(-float64(slowdown)/sense))
+			// ±10% jitter to desync concurrent pollers
+			sleep *= 1 + (rand.Float64()-0.5)*0.2
 			dur := time.Duration(sleep * float64(time.Second))
 			k.logger.DebugContext(ctx,
 				"slowdown", slog.Int("slowdown", slowdown),
@@ -515,13 +558,18 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			}
 		}
 
+		k.tubeRW.RLock()
+		reqTubes := make([]Tube, len(k.tubes))
+		copy(reqTubes, k.tubes)
+		k.tubeRW.RUnlock()
+
 		result, err := k.store.PollPending(ctx, PollRequest{
 			Limit:           k.settings.batchSize,
 			Now:             time.Now(),
 			TTR:             k.settings.processTime,
 			BackoffBase:     k.settings.backoffBase,
 			MaxBackoffDelay: k.settings.maxBackoffDelay,
-			RequestTubes:    k.settings.tubes,
+			RequestTubes:    reqTubes,
 		})
 
 		if err != nil {
@@ -537,7 +585,7 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			continue
 		}
 
-		// As soon as some tickets received, speedup
+		// As soon as any ticket arrived, speedup
 		if slowdown > 0 {
 			slowdown--
 			if resultSize == k.settings.batchSize {

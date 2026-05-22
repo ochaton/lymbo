@@ -65,4 +65,7 @@ func TestPostgresStore(t *testing.T) {
 
 	finalizerSuite := NewFinalizerTestSuite(factory)
 	finalizerSuite.RunAll(t)
+
+	concurrentSuite := NewConcurrentTestSuite(factory)
+	concurrentSuite.RunAll(t)
 }

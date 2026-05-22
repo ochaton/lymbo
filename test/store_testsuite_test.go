@@ -256,52 +256,60 @@ func (s *StoreTestSuite) TestRetryWithFixedDelay(t *testing.T) {
 	kh := lymbo.NewKharon(store, settings, nil)
 	router := lymbo.NewRouter()
 
-	delay := 300 * time.Millisecond
-	retryCount := atomic.Int32{}
-	var timestamps []time.Time
-	mu := sync.Mutex{}
+	const (
+		delay        = 300 * time.Millisecond
+		totalRetries = 3
+	)
+
+	var (
+		retryCount atomic.Int32
+		timestamps = make([]time.Time, 0, totalRetries)
+		done       = make(chan []time.Time, 1)
+	)
 
 	err := router.HandleFunc("retry-task", func(ctx context.Context, t *lymbo.Ticket) error {
-		mu.Lock()
+		// Handler invocations are serialized: workers=1 and the ticket is only
+		// re-enqueued via Retry/Ack after the handler returns, so timestamps is
+		// safe to append without a mutex.
 		timestamps = append(timestamps, time.Now())
-		mu.Unlock()
 
 		count := retryCount.Add(1)
-		if count < 3 {
+		if count < totalRetries {
 			return kh.Retry(ctx, t.ID, lymbo.WithDelay(lymbo.FixedDelay(delay)))
 		}
+		done <- timestamps
+		close(done)
 		return kh.Ack(ctx, t.ID)
 	})
 	require.NoError(t, err)
 
 	ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "retry-task")
 	require.NoError(t, err)
+	require.NoError(t, kh.Put(ctx, *ticket))
 
-	err = kh.Put(ctx, *ticket)
-	require.NoError(t, err)
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = kh.Run(ctx, router) })
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	var result []time.Time
+	select {
+	case v := <-done:
+		result = v
+	case <-ctx.Done():
+		t.Fatalf("timeout: retries=%d/%d", retryCount.Load(), totalRetries)
+	}
 
-	require.Eventually(t, func() bool {
-		return retryCount.Load() >= 3
-	}, 5*time.Second, 10*time.Millisecond)
+	cancel()
+	wg.Wait()
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Verify delays between retries (allowing for batching and processing overhead)
-	for i := 1; i < len(timestamps); i++ {
-		actualDelay := timestamps[i].Sub(timestamps[i-1])
+	require.Len(t, result, totalRetries)
+	for i := 1; i < len(result); i++ {
+		actualDelay := result[i].Sub(result[i-1])
 		t.Logf("Retry %d: actual delay=%v, expected delay=%v", i, actualDelay, delay)
-		// Verify there was some delay (at least 50ms accounting for all overhead)
 		assert.Greater(t, actualDelay, 50*time.Millisecond,
 			"delay %d should have some delay, got %v", i, actualDelay)
 	}
-	// Verify the total time is at least somewhat delayed
-	totalTime := timestamps[len(timestamps)-1].Sub(timestamps[0])
-	t.Logf("Total time for 3 attempts: %v", totalTime)
+	totalTime := result[len(result)-1].Sub(result[0])
+	t.Logf("Total time for %d attempts: %v", totalRetries, totalTime)
 	assert.Greater(t, totalTime, 200*time.Millisecond, "total time should show retries were delayed")
 }
 
