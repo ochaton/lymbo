@@ -87,9 +87,7 @@ func (s *StoreTestSuite) TestBasicWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Start kharon in background
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	// Wait for processing
 	require.Eventually(t, func() bool {
@@ -201,9 +199,7 @@ func (s *StoreTestSuite) TestExponentialBackoffStrategy(t *testing.T) {
 	require.NoError(t, err)
 
 	// Start kharon
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	// Wait for all retries to complete
 	require.Eventually(t, func() bool {
@@ -346,9 +342,7 @@ func (s *StoreTestSuite) TestDoneKeepsTicket(t *testing.T) {
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
@@ -403,9 +397,7 @@ func (s *StoreTestSuite) TestFailWithErrorReason(t *testing.T) {
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
@@ -475,9 +467,7 @@ func (s *StoreTestSuite) TestCancelRemovesTicket(t *testing.T) {
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processed.Load()
@@ -558,9 +548,7 @@ func (s *StoreTestSuite) TestPriorityOrdering(t *testing.T) {
 	// Small delay to ensure all tickets are in the store
 	time.Sleep(20 * time.Millisecond)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processedCount.Load() == 3
@@ -611,9 +599,7 @@ func (s *StoreTestSuite) TestNotFoundHandler(t *testing.T) {
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return handlerCalled.Load()
@@ -671,9 +657,7 @@ func (s *StoreTestSuite) TestMultipleTicketsParallelProcessing(t *testing.T) {
 
 	startTime := time.Now()
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processedCount.Load() == numTickets
@@ -740,9 +724,7 @@ func (s *StoreTestSuite) TestExponentialBackoffMaxDelay(t *testing.T) {
 	err = kh.Put(ctx, *ticket)
 	require.NoError(t, err)
 
-	go func() {
-		_ = kh.Run(ctx, router)
-	}()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return retryCount.Load() >= 5

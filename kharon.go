@@ -60,6 +60,10 @@ type Kharon struct {
 	tubes   []Tube
 	tubeson bool
 
+	runMu     sync.Mutex
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+
 	stats *stats.T
 }
 
@@ -347,20 +351,49 @@ func (k *Kharon) Group(id string) *Group {
 //
 // On shutdown, all goroutines exit immediately. In-flight tickets are not
 // drained since they are persisted and will be reprocessed on next startup.
+// Run starts the polling, dispatch, and persistence goroutines and blocks
+// until ctx is cancelled or Stop is called. Only one Run may be in flight per
+// Kharon instance; concurrent calls return ErrAlreadyRunning.
+//
+// On return, all background goroutines have exited and the shutdown flush has
+// completed (subject to Settings.shutdownFlushTimeout), so callers can safely
+// release shared resources (DB pool, etc.) immediately afterwards.
 func (k *Kharon) Run(ctx context.Context, r *Router) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	k.runMu.Lock()
+	if k.runDone != nil {
+		k.runMu.Unlock()
+		cancel()
+		return ErrAlreadyRunning
+	}
+	k.runCancel = cancel
+	k.runDone = done
+	k.runMu.Unlock()
+
+	defer func() {
+		k.runMu.Lock()
+		k.runCancel = nil
+		k.runDone = nil
+		k.runMu.Unlock()
+		cancel()
+		close(done)
+	}()
+
 	var wg sync.WaitGroup
 
 	// Start pusher
-	wg.Go(func() { k.runPusher(ctx) })
+	wg.Go(func() { k.runPusher(runCtx) })
 
 	// Start workers
 	for i := 0; i < k.settings.workers; i++ {
-		wg.Go(func() { k.runWorker(ctx, r) })
+		wg.Go(func() { k.runWorker(runCtx, r) })
 	}
 
 	// Start expiration worker
 	if k.settings.enableExpiration {
-		wg.Go(func() { k.runExpirationWorker(ctx) })
+		wg.Go(func() { k.runExpirationWorker(runCtx) })
 	}
 
 	k.logger.InfoContext(ctx, "kharon started",
@@ -371,14 +404,38 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 		"process_time", k.settings.processTime.String(),
 	)
 
-	// Run main polling loop (blocks until ctx cancelled)
-	pollErr := k.runPoller(ctx)
+	// Run main polling loop (blocks until runCtx cancelled)
+	pollErr := k.runPoller(runCtx)
 
 	// Wait for all goroutines to exit
 	wg.Wait()
 
 	k.logger.InfoContext(ctx, "shutdown complete")
 	return pollErr
+}
+
+// Stop cancels an in-progress Run and blocks until it returns (all goroutines
+// exited and the shutdown flush completed), or until ctx is cancelled.
+// Returns nil if Run is not currently active, or ctx.Err() if ctx fires before
+// shutdown completes.
+func (k *Kharon) Stop(ctx context.Context) error {
+	k.runMu.Lock()
+	cancel := k.runCancel
+	done := k.runDone
+	k.runMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // runWorker processes tickets from income channel.

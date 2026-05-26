@@ -30,7 +30,7 @@ func BenchmarkMemoryThroughput(b *testing.B) {
 		return kh.Ack(ctx, t.ID)
 	})
 
-	go func() { _ = kh.Run(ctx, router) }()
+	startKharon(b, ctx, kh, router)
 
 	b.ResetTimer()
 
@@ -77,7 +77,7 @@ func BenchmarkMemoryQueueWait(b *testing.B) {
 		return kh.Ack(ctx, t.ID)
 	})
 
-	go func() { _ = kh.Run(ctx, router) }()
+	startKharon(b, ctx, kh, router)
 
 	rl := rate.NewLimiter(putRatePerSec, putRatePerSec)
 
