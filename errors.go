@@ -11,4 +11,5 @@ var (
 	ErrTicketNotFound          = errors.New("ticket not found")
 	ErrInvalidStatusTransition = errors.New("invalid status transition")
 	ErrFinalizerInGroup        = errors.New("finalizer must not be a member of the group it finalizes")
+	ErrTubesNotEnabled         = errors.New("tubes are not enabled on this kharon instance")
 )

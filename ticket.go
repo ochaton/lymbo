@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ochaton/lymbo/status"
 )
 
@@ -32,6 +33,16 @@ func (t Tube) String() string {
 
 func (t TicketId) String() string {
 	return string(t)
+}
+
+// MustID returns a fresh UUIDv7-based TicketId.
+// Panics if the system random source fails, which is unrecoverable.
+func MustID() TicketId {
+	v7, err := uuid.NewV7()
+	if err != nil {
+		panic(err)
+	}
+	return TicketId(v7.String())
 }
 
 // Ticket represents a job to be processed.
@@ -104,6 +115,14 @@ func NewTubeTicket(tube Tube, tid TicketId, typ string) (*Ticket, error) {
 	}
 	t.Tube = tube
 	return t, nil
+}
+
+func MustTubeTicket(tube Tube, tid TicketId, typ string) *Ticket {
+	t, err := NewTubeTicket(tube, tid, typ)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }
 
 // WithPayload sets the payload for the ticket and returns the ticket.

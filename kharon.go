@@ -56,8 +56,9 @@ type Kharon struct {
 	income   chan *Ticket
 	outcome  chan msg
 
-	tubeRW sync.RWMutex
-	tubes  []Tube
+	tubeRW  sync.RWMutex
+	tubes   []Tube
+	tubeson bool
 
 	stats *stats.T
 }
@@ -90,6 +91,8 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 		store:    newObservableStore(store, st),
 		settings: *s,
 		logger:   logger,
+		tubeRW:   sync.RWMutex{},
+		tubeson:  s.tubesOn,
 		tubes:    s.tubes,
 		income:   make(chan *Ticket, s.workers),
 		outcome:  make(chan msg, 10*s.workers),
@@ -289,7 +292,10 @@ func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
 }
 
-func (k *Kharon) Subscribe(addTubes []string) {
+func (k *Kharon) Subscribe(addTubes []string) error {
+	if !k.tubeson {
+		return ErrTubesNotEnabled
+	}
 	add := make(map[Tube]struct{}, len(addTubes))
 	for _, v := range addTubes {
 		if v == "" {
@@ -307,9 +313,14 @@ func (k *Kharon) Subscribe(addTubes []string) {
 	for a := range add {
 		k.tubes = append(k.tubes, a)
 	}
+	return nil
 }
 
-func (k *Kharon) Unsubscribe(delTubes []string) {
+func (k *Kharon) Unsubscribe(delTubes []string) error {
+	if !k.tubeson {
+		return ErrTubesNotEnabled
+	}
+
 	del := make(map[Tube]struct{}, len(delTubes))
 	for _, v := range delTubes {
 		del[Tube(v)] = struct{}{}
@@ -322,6 +333,7 @@ func (k *Kharon) Unsubscribe(delTubes []string) {
 		_, ok := del[t]
 		return ok
 	})
+	return nil
 }
 
 // Group returns a Group that associates tickets with the given identifier.
@@ -516,8 +528,36 @@ func (k *Kharon) runPoller(ctx context.Context) error {
 	}
 }
 
-// poll executes one polling cycle and returns the next sleep duration.
-// Returns 0 if ctx is cancelled.
+// Tubes returns a snapshot of the currently subscribed tubes.
+func (k *Kharon) Tubes() []Tube {
+	if !k.tubeson { // not enabled
+		return []Tube{DefaultTube}
+	}
+
+	k.tubeRW.RLock()
+	defer k.tubeRW.RUnlock()
+
+	tubes := make([]Tube, len(k.tubes))
+	copy(tubes, k.tubes)
+	return tubes
+}
+
+func (k *Kharon) IsSubscribedTo(tube Tube) bool {
+	if !k.tubeson { // not enabled
+		return tube == DefaultTube
+	}
+
+	k.tubeRW.RLock()
+	defer k.tubeRW.RUnlock()
+
+	return slices.Contains(k.tubes, tube)
+}
+
+// poll runs the polling loop, fetching pending tickets from the store and
+// dispatching them to workers via the income channel. It applies adaptive
+// slowdown when the store returns no work and rate-limits full-speed polls.
+// Returns 0 if ctx is cancelled, or maxReactionDelay on store error so the
+// caller can back off before re-entering.
 func (k *Kharon) poll(ctx context.Context) time.Duration {
 	lim := rate.NewLimiter(rate.Every(k.settings.minReactionDelay), 1)
 	slowdown := 0
@@ -543,9 +583,9 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			// ±10% jitter to desync concurrent pollers
 			sleep *= 1 + (rand.Float64()-0.5)*0.2
 			dur := time.Duration(sleep * float64(time.Second))
-			k.logger.DebugContext(ctx,
-				"slowdown", slog.Int("slowdown", slowdown),
-				"dur", slog.Duration("dur", dur),
+			k.logger.DebugContext(ctx, "poll slowdown",
+				slog.Int("slowdown", slowdown),
+				slog.Duration("dur", dur),
 			)
 			time.Sleep(dur)
 		}
@@ -558,18 +598,13 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			}
 		}
 
-		k.tubeRW.RLock()
-		reqTubes := make([]Tube, len(k.tubes))
-		copy(reqTubes, k.tubes)
-		k.tubeRW.RUnlock()
-
 		result, err := k.store.PollPending(ctx, PollRequest{
 			Limit:           k.settings.batchSize,
 			Now:             time.Now(),
 			TTR:             k.settings.processTime,
 			BackoffBase:     k.settings.backoffBase,
 			MaxBackoffDelay: k.settings.maxBackoffDelay,
-			RequestTubes:    reqTubes,
+			RequestTubes:    k.Tubes(),
 		})
 
 		if err != nil {
@@ -599,9 +634,44 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			k.stats.ByKey(t.Type, t.Tube.String()).Inc(stats.Poll)
 		}
 
-		for _, t := range result.Tickets {
+		// When tubes are off, we just feed all the tickets
+		// faster, no logic, no reallocations
+		dispatch := result.Tickets
+		if k.tubeson {
+			dispatch = result.Tickets[:0]
+			// Unsubscribe may have happened between PollPending and now;
+			// such tickets must be put back to the store, not dispatched.
+			subedTo := map[Tube]struct{}{}
+			for _, v := range k.Tubes() {
+				subedTo[v] = struct{}{}
+			}
+
+			var putBack []UpdateSet
+			for i := range result.Tickets {
+				t := &result.Tickets[i]
+				if _, ok := subedTo[t.Tube]; ok {
+					dispatch = append(dispatch, *t)
+					continue
+				}
+				// Copy ReadyAt by value: dispatch reuses result.Tickets backing
+				// array, so &t.ReadyAt would alias a slot a later append may
+				// overwrite, corrupting the put-back Runat.
+				readyAt := t.ReadyAt
+				putBack = append(putBack, UpdateSet{
+					Id:    t.ID,
+					Runat: &readyAt,
+				})
+			}
+			if len(putBack) > 0 {
+				if _, err := k.store.UpdateBatch(ctx, putBack); err != nil {
+					k.logger.WarnContext(ctx, "failed to put-back ticket", slog.Any("err", err))
+				}
+			}
+		}
+
+		for i := range dispatch {
 			select {
-			case k.income <- &t:
+			case k.income <- &dispatch[i]:
 			case <-ctx.Done():
 				return 0
 			}
