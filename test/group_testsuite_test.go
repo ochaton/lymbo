@@ -63,7 +63,7 @@ func (s *StoreTestSuite) TestGroupAllTerminal(t *testing.T) {
 		require.NoError(t, kh.Put(ctx, *ticket, lymbo.WithGroup(g.ID())))
 	}
 
-	go func() { _ = kh.Run(ctx, router) }()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		terminal, err := g.AllTerminal(ctx)
@@ -112,7 +112,7 @@ func (s *StoreTestSuite) TestGroupMixedStates(t *testing.T) {
 		require.NoError(t, kh.Put(ctx, *ticket, lymbo.WithGroup(g.ID()), lymbo.WithDelay(lymbo.FixedDelay(1*time.Hour))))
 	}
 
-	go func() { _ = kh.Run(ctx, router) }()
+	startKharon(t, ctx, kh, router)
 
 	require.Eventually(t, func() bool {
 		return processed.Load() >= 1

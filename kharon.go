@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -54,6 +56,14 @@ type Kharon struct {
 	income   chan *Ticket
 	outcome  chan msg
 
+	tubeRW  sync.RWMutex
+	tubes   []Tube
+	tubeson bool
+
+	runMu     sync.Mutex
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+
 	stats *stats.T
 }
 
@@ -85,6 +95,9 @@ func NewKharon(store Store, s *Settings, logger *slog.Logger) *Kharon {
 		store:    newObservableStore(store, st),
 		settings: *s,
 		logger:   logger,
+		tubeRW:   sync.RWMutex{},
+		tubeson:  s.tubesOn,
+		tubes:    s.tubes,
 		income:   make(chan *Ticket, s.workers),
 		outcome:  make(chan msg, 10*s.workers),
 		stats:    st,
@@ -283,6 +296,50 @@ func (k *Kharon) Stats() stats.Stats {
 	return k.stats.Snapshot()
 }
 
+func (k *Kharon) Subscribe(addTubes []string) error {
+	if !k.tubeson {
+		return ErrTubesNotEnabled
+	}
+	add := make(map[Tube]struct{}, len(addTubes))
+	for _, v := range addTubes {
+		if v == "" {
+			continue
+		}
+		add[Tube(v)] = struct{}{}
+	}
+
+	k.tubeRW.Lock()
+	defer k.tubeRW.Unlock()
+
+	for _, e := range k.tubes {
+		delete(add, e)
+	}
+	for a := range add {
+		k.tubes = append(k.tubes, a)
+	}
+	return nil
+}
+
+func (k *Kharon) Unsubscribe(delTubes []string) error {
+	if !k.tubeson {
+		return ErrTubesNotEnabled
+	}
+
+	del := make(map[Tube]struct{}, len(delTubes))
+	for _, v := range delTubes {
+		del[Tube(v)] = struct{}{}
+	}
+
+	k.tubeRW.Lock()
+	defer k.tubeRW.Unlock()
+
+	k.tubes = slices.DeleteFunc(k.tubes, func(t Tube) bool {
+		_, ok := del[t]
+		return ok
+	})
+	return nil
+}
+
 // Group returns a Group that associates tickets with the given identifier.
 func (k *Kharon) Group(id string) *Group {
 	return &Group{id: id, k: k}
@@ -294,20 +351,49 @@ func (k *Kharon) Group(id string) *Group {
 //
 // On shutdown, all goroutines exit immediately. In-flight tickets are not
 // drained since they are persisted and will be reprocessed on next startup.
+// Run starts the polling, dispatch, and persistence goroutines and blocks
+// until ctx is cancelled or Stop is called. Only one Run may be in flight per
+// Kharon instance; concurrent calls return ErrAlreadyRunning.
+//
+// On return, all background goroutines have exited and the shutdown flush has
+// completed (subject to Settings.shutdownFlushTimeout), so callers can safely
+// release shared resources (DB pool, etc.) immediately afterwards.
 func (k *Kharon) Run(ctx context.Context, r *Router) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	k.runMu.Lock()
+	if k.runDone != nil {
+		k.runMu.Unlock()
+		cancel()
+		return ErrAlreadyRunning
+	}
+	k.runCancel = cancel
+	k.runDone = done
+	k.runMu.Unlock()
+
+	defer func() {
+		k.runMu.Lock()
+		k.runCancel = nil
+		k.runDone = nil
+		k.runMu.Unlock()
+		cancel()
+		close(done)
+	}()
+
 	var wg sync.WaitGroup
 
 	// Start pusher
-	wg.Go(func() { k.runPusher(ctx) })
+	wg.Go(func() { k.runPusher(runCtx) })
 
 	// Start workers
 	for i := 0; i < k.settings.workers; i++ {
-		wg.Go(func() { k.runWorker(ctx, r) })
+		wg.Go(func() { k.runWorker(runCtx, r) })
 	}
 
 	// Start expiration worker
 	if k.settings.enableExpiration {
-		wg.Go(func() { k.runExpirationWorker(ctx) })
+		wg.Go(func() { k.runExpirationWorker(runCtx) })
 	}
 
 	k.logger.InfoContext(ctx, "kharon started",
@@ -318,14 +404,38 @@ func (k *Kharon) Run(ctx context.Context, r *Router) error {
 		"process_time", k.settings.processTime.String(),
 	)
 
-	// Run main polling loop (blocks until ctx cancelled)
-	pollErr := k.runPoller(ctx)
+	// Run main polling loop (blocks until runCtx cancelled)
+	pollErr := k.runPoller(runCtx)
 
 	// Wait for all goroutines to exit
 	wg.Wait()
 
 	k.logger.InfoContext(ctx, "shutdown complete")
 	return pollErr
+}
+
+// Stop cancels an in-progress Run and blocks until it returns (all goroutines
+// exited and the shutdown flush completed), or until ctx is cancelled.
+// Returns nil if Run is not currently active, or ctx.Err() if ctx fires before
+// shutdown completes.
+func (k *Kharon) Stop(ctx context.Context) error {
+	k.runMu.Lock()
+	cancel := k.runCancel
+	done := k.runDone
+	k.runMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // runWorker processes tickets from income channel.
@@ -475,8 +585,36 @@ func (k *Kharon) runPoller(ctx context.Context) error {
 	}
 }
 
-// poll executes one polling cycle and returns the next sleep duration.
-// Returns 0 if ctx is cancelled.
+// Tubes returns a snapshot of the currently subscribed tubes.
+func (k *Kharon) Tubes() []Tube {
+	if !k.tubeson { // not enabled
+		return []Tube{DefaultTube}
+	}
+
+	k.tubeRW.RLock()
+	defer k.tubeRW.RUnlock()
+
+	tubes := make([]Tube, len(k.tubes))
+	copy(tubes, k.tubes)
+	return tubes
+}
+
+func (k *Kharon) IsSubscribedTo(tube Tube) bool {
+	if !k.tubeson { // not enabled
+		return tube == DefaultTube
+	}
+
+	k.tubeRW.RLock()
+	defer k.tubeRW.RUnlock()
+
+	return slices.Contains(k.tubes, tube)
+}
+
+// poll runs the polling loop, fetching pending tickets from the store and
+// dispatching them to workers via the income channel. It applies adaptive
+// slowdown when the store returns no work and rate-limits full-speed polls.
+// Returns 0 if ctx is cancelled, or maxReactionDelay on store error so the
+// caller can back off before re-entering.
 func (k *Kharon) poll(ctx context.Context) time.Duration {
 	lim := rate.NewLimiter(rate.Every(k.settings.minReactionDelay), 1)
 	slowdown := 0
@@ -499,10 +637,12 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			// and for x=inf+ gives maxReactionDelay
 			// but not linear.
 			sleep := mn + (mx-mn)*(1-math.Exp2(-float64(slowdown)/sense))
+			// ±10% jitter to desync concurrent pollers
+			sleep *= 1 + (rand.Float64()-0.5)*0.2
 			dur := time.Duration(sleep * float64(time.Second))
-			k.logger.DebugContext(ctx,
-				"slowdown", slog.Int("slowdown", slowdown),
-				"dur", slog.Duration("dur", dur),
+			k.logger.DebugContext(ctx, "poll slowdown",
+				slog.Int("slowdown", slowdown),
+				slog.Duration("dur", dur),
 			)
 			time.Sleep(dur)
 		}
@@ -521,7 +661,7 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			TTR:             k.settings.processTime,
 			BackoffBase:     k.settings.backoffBase,
 			MaxBackoffDelay: k.settings.maxBackoffDelay,
-			RequestTubes:    k.settings.tubes,
+			RequestTubes:    k.Tubes(),
 		})
 
 		if err != nil {
@@ -537,7 +677,7 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			continue
 		}
 
-		// As soon as some tickets received, speedup
+		// As soon as any ticket arrived, speedup
 		if slowdown > 0 {
 			slowdown--
 			if resultSize == k.settings.batchSize {
@@ -551,9 +691,44 @@ func (k *Kharon) poll(ctx context.Context) time.Duration {
 			k.stats.ByKey(t.Type, t.Tube.String()).Inc(stats.Poll)
 		}
 
-		for _, t := range result.Tickets {
+		// When tubes are off, we just feed all the tickets
+		// faster, no logic, no reallocations
+		dispatch := result.Tickets
+		if k.tubeson {
+			dispatch = result.Tickets[:0]
+			// Unsubscribe may have happened between PollPending and now;
+			// such tickets must be put back to the store, not dispatched.
+			subedTo := map[Tube]struct{}{}
+			for _, v := range k.Tubes() {
+				subedTo[v] = struct{}{}
+			}
+
+			var putBack []UpdateSet
+			for i := range result.Tickets {
+				t := &result.Tickets[i]
+				if _, ok := subedTo[t.Tube]; ok {
+					dispatch = append(dispatch, *t)
+					continue
+				}
+				// Copy ReadyAt by value: dispatch reuses result.Tickets backing
+				// array, so &t.ReadyAt would alias a slot a later append may
+				// overwrite, corrupting the put-back Runat.
+				readyAt := t.ReadyAt
+				putBack = append(putBack, UpdateSet{
+					Id:    t.ID,
+					Runat: &readyAt,
+				})
+			}
+			if len(putBack) > 0 {
+				if _, err := k.store.UpdateBatch(ctx, putBack); err != nil {
+					k.logger.WarnContext(ctx, "failed to put-back ticket", slog.Any("err", err))
+				}
+			}
+		}
+
+		for i := range dispatch {
 			select {
-			case k.income <- &t:
+			case k.income <- &dispatch[i]:
 			case <-ctx.Done():
 				return 0
 			}

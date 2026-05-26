@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/ochaton/lymbo"
 	"github.com/ochaton/lymbo/examples/common"
 	"github.com/ochaton/lymbo/store/postgres"
@@ -38,7 +37,6 @@ func main() {
 
 	khPinger := lymbo.NewKharon(pg,
 		lymbo.DefaultSettings().
-			WithBatchSize(8).
 			WithWorkers(8).
 			WithOnlyTubes(lymbo.Tube("ping")),
 		slog.Default(),
@@ -46,7 +44,6 @@ func main() {
 
 	khPonger := lymbo.NewKharon(pg,
 		lymbo.DefaultSettings().
-			WithBatchSize(8).
 			WithWorkers(8).
 			WithOnlyTubes(lymbo.Tube("pong")),
 		slog.Default(),
@@ -66,11 +63,7 @@ func main() {
 
 	// Start arbitrator
 	eg.Go(func() error {
-		tkt, err := lymbo.NewTubeTicket(
-			lymbo.Tube("ping"),
-			lymbo.TicketId(uuid.NewString()),
-			"ball",
-		)
+		tkt, err := lymbo.NewTubeTicket(lymbo.Tube("ping"), lymbo.MustID(), "ball")
 		if err != nil {
 			return err
 		}

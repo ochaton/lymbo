@@ -48,8 +48,12 @@ type Settings struct {
 	// flushInterval is the interval for flushing batches to the store.
 	flushInterval time.Duration
 
-	// tubes
+	// tubes are the subscribed tube names; nil means only the Default tube.
 	tubes []Tube
+
+	// tubesOn enables tube-based routing on the Kharon instance.
+	// Required for Subscribe/Unsubscribe to be permitted.
+	tubesOn bool
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults.
@@ -66,7 +70,8 @@ func DefaultSettings() *Settings {
 		expirationInterval:   ExpirationInterval,
 		shutdownFlushTimeout: 5 * time.Second,
 		flushInterval:        100 * time.Millisecond,
-		tubes:                nil, // nil means only Default tube
+		tubes:                nil,   // nil means only Default tube
+		tubesOn:              false, // by default, tubes are not needed
 	}
 }
 
@@ -85,6 +90,9 @@ func (s *Settings) WithWorkers(workers int) *Settings {
 	return s
 }
 
+// WithBatchSize sets the number of tickets fetched per poll.
+//
+// Deprecated: only use WithWorkers.
 func (s *Settings) WithBatchSize(batchSize int) *Settings {
 	s.batchSize = batchSize
 	return s
@@ -131,8 +139,24 @@ func (s *Settings) WithFlushInterval(d time.Duration) *Settings {
 
 // WithTubes sets the tubes for Kharon to work with.
 // If no tubes are provided, it defaults to the "default" tube.
+// Empty tube names are dropped. Duplicates are removed.
 func (s *Settings) WithOnlyTubes(tubes ...Tube) *Settings {
-	s.tubes = slices.Compact(tubes)
+	out := tubes[:0]
+	for _, t := range tubes {
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	slices.Sort(out)
+	s.tubes = slices.Compact(out)
+	s.tubesOn = len(s.tubes) > 0
+	return s
+}
+
+// EnableTubes enables tube-based routing on the Kharon instance.
+// Use it, or specify the tubes directly via WithOnlyTubes.
+func (s *Settings) EnableTubes() *Settings {
+	s.tubesOn = true
 	return s
 }
 
@@ -161,5 +185,8 @@ func (s *Settings) normalize() {
 	}
 	if s.flushInterval <= 0 {
 		s.flushInterval = 100 * time.Millisecond
+	}
+	if len(s.tubes) > 0 {
+		s.tubesOn = true
 	}
 }
