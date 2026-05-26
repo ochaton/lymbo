@@ -17,6 +17,7 @@ A Go library for delayed task processing and state reconciliation.
     - [Delay Strategies](#delay-strategies)
     - [Groups](#groups)
     - [Finalizers](#finalizers)
+    - [Tubes](#tubes)
   - [Configuration](#configuration)
   - [Storage](#storage)
     - [In-Memory](#in-memory)
@@ -53,7 +54,6 @@ import (
     "context"
     "log/slog"
 
-    "github.com/google/uuid"
     "github.com/ochaton/lymbo"
     "github.com/ochaton/lymbo/store/memory"
 )
@@ -71,7 +71,7 @@ func main() {
 
     go kh.Run(ctx, router)
 
-    ticket, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "example")
+    ticket, _ := lymbo.NewTicket(lymbo.MustID(), "example")
     kh.Put(ctx, *ticket)
 }
 ```
@@ -81,7 +81,7 @@ func main() {
 ### Creating Tickets
 
 ```go
-ticket, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "task-type")
+ticket, err := lymbo.NewTicket(lymbo.MustID(), "task-type")
 
 // With payload (auto-marshaled to JSON)
 ticket.WithPayload(map[string]any{"key": "value"})
@@ -90,7 +90,7 @@ ticket.WithPayload(map[string]any{"key": "value"})
 ticket.WithNice(5).WithRunat(time.Now().Add(time.Hour))
 
 // With tube routing
-ticket, err := lymbo.NewTubeTicket("emails", lymbo.TicketId(uuid.NewString()), "send-email")
+ticket, err := lymbo.NewTubeTicket("emails", lymbo.MustID(), "send-email")
 
 // Put with options
 kh.Put(ctx, *ticket,
@@ -190,7 +190,7 @@ g := kh.Group("order-42-notifications")
 
 // Submit tickets into the group
 for _, userID := range recipients {
-    ticket, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "send-notification")
+    ticket, _ := lymbo.NewTicket(lymbo.MustID(), "send-notification")
     kh.Put(ctx, *ticket,
         lymbo.WithGroup(g.ID()),
         lymbo.WithPayload(userID),
@@ -234,11 +234,11 @@ members first, then submit the finalizer with `AfterGroup`:
 groupID := "order-42-notifications"
 
 for _, userID := range recipients {
-    ticket, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "send-notification")
+    ticket, _ := lymbo.NewTicket(lymbo.MustID(), "send-notification")
     kh.Put(ctx, *ticket, lymbo.WithGroup(groupID), lymbo.WithPayload(userID))
 }
 
-finalizer, _ := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "notifications-complete")
+finalizer, _ := lymbo.NewTicket(lymbo.MustID(), "notifications-complete")
 kh.Put(ctx, *finalizer, lymbo.AfterGroup(groupID))
 ```
 
@@ -253,12 +253,60 @@ Notes:
 - `AfterGroup("g")` + `WithGroup("g")` on the same `Put` returns `ErrFinalizerInGroup`.
 - Re-submitting a finalizer with the same ID is a no-op.
 
+### Tubes
+
+Tubes route tickets to separate queues. A Kharon instance only polls tickets whose tube it is
+subscribed to. Tube routing must be explicitly enabled before subscriptions are allowed —
+otherwise the instance processes only the `"default"` tube.
+
+Enable tubes at construction in one of two ways:
+
+```go
+// Declaratively, with an initial subscription set:
+kh := lymbo.NewKharon(store,
+    lymbo.DefaultSettings().WithOnlyTubes("emails", "notifications"),
+    slog.Default(),
+)
+
+// Or empty, to drive subscriptions dynamically at runtime:
+kh := lymbo.NewKharon(store,
+    lymbo.DefaultSettings().EnableTubes(),
+    slog.Default(),
+)
+```
+
+Manage subscriptions at runtime:
+
+```go
+if err := kh.Subscribe([]string{"emails", "sms"}); err != nil {
+    // returns lymbo.ErrTubesNotEnabled if the instance was built without
+    // WithOnlyTubes/EnableTubes
+}
+
+if err := kh.Unsubscribe([]string{"sms"}); err != nil { /* ... */ }
+
+current := kh.Tubes()                          // snapshot of subscribed tubes
+ok := kh.IsSubscribedTo(lymbo.Tube("emails"))  // membership check
+```
+
+Behavior notes:
+
+- When tubes are disabled, `Tubes()` returns `["default"]` and `IsSubscribedTo` only matches
+  `lymbo.DefaultTube`. `Subscribe`/`Unsubscribe` return `ErrTubesNotEnabled`.
+- Empty tube names passed to `Subscribe` are dropped; duplicates are deduped.
+- An `Unsubscribe` that races with an in-flight poll is safe: tickets fetched for tubes the
+  instance no longer owns are re-scheduled back to the store instead of being dispatched.
+- Use `WithTube(tube)` on lifecycle methods (e.g. `Retry`, `Ack`) to atomically move a ticket
+  between tubes.
+
+See [examples/tubes](examples/tubes/) for a two-instance ping-pong setup and
+[examples/pubsub](examples/pubsub/) for a dynamic subscription sketch.
+
 ## Configuration
 
 ```go
 settings := lymbo.DefaultSettings().
     WithWorkers(10).
-    WithBatchSize(20).
     WithProcessTime(5 * time.Minute).
     WithBackoffBase(2.0).
     WithOnlyTubes("emails", "notifications")
@@ -267,10 +315,11 @@ settings := lymbo.DefaultSettings().
 | Method | Default | Description |
 | ------ | ------- | ----------- |
 | `WithWorkers(n)` | 4 | Concurrent ticket processors |
-| `WithBatchSize(n)` | 4 | Max tickets per poll (capped at workers) |
+| `WithBatchSize(n)` | 4 | Deprecated; sizing now follows `WithWorkers` |
 | `WithProcessTime(d)` | 30s | TTR before re-poll |
 | `WithBackoffBase(f)` | 1.5 | Exponential backoff base |
-| `WithOnlyTubes(t...)` | `"default"` | Tubes to process |
+| `WithOnlyTubes(t...)` | `"default"` | Tubes to process (also enables tube routing) |
+| `EnableTubes()` | off | Enable tube routing without an initial subscription set |
 | `WithExpiration()` | enabled | Auto-cleanup of expired tickets |
 | `WithoutExpiration()` | - | Disable auto-cleanup |
 
@@ -370,6 +419,7 @@ See [examples/](examples/) for complete working examples:
 - [basic](examples/basic/) — HTTP API, memory or postgres storage, stats logging
 - [simple](examples/simple/) — Rate-limited ticket pusher with postgres
 - [tubes](examples/tubes/) — Ping-pong between two tubes with two Kharon instances
+- [pubsub](examples/pubsub/) — Dynamic tube subscription with `EnableTubes()`
 - [prometheus](examples/prometheus/) — Full observability stack with Grafana dashboards
 
 ## License
