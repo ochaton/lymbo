@@ -461,7 +461,10 @@ func clampMaxAttempts(maxDelay int32, backoffBase float64) int32 {
 
 func setTubes(tubes []lymbo.Tube) ([]string, error) {
 	if len(tubes) == 0 {
-		return []string{"default"}, nil
+		// Empty subscription set: caller wants to poll no tubes. SQL
+		// `tube = ANY('{}'::text[])` matches no rows, so PollPending
+		// becomes a no-op instead of silently selecting the default tube.
+		return []string{}, nil
 	}
 	if len(tubes) > 10 {
 		return nil, fmt.Errorf("too many tubes requested: %d (max 10)", len(tubes))
