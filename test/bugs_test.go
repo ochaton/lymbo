@@ -1,10 +1,12 @@
 package lymbo_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ochaton/lymbo"
 	"github.com/ochaton/lymbo/store/memory"
 )
@@ -67,5 +69,50 @@ func TestBug_PutBackRunatPointerAlias(t *testing.T) {
 	if !got.Equal(timeA) {
 		t.Errorf("BUG: putBack[0].Runat aliased into reused buffer\n  want %v (A.ReadyAt)\n  got  %v (B.ReadyAt=%v)",
 			timeA, got, timeB)
+	}
+}
+
+// TestBug_EmptyRequestTubesPollsNothing guards against the silent-default bug:
+//
+// PollPending with an empty RequestTubes slice used to fall through to the
+// "default" tube on both stores. That meant a tubesOn=true Kharon with no
+// Subscribe() would poll default-tube tickets it doesn't own, bump their
+// attempts via the UPDATE inside PollTickets, and force the real owner to
+// observe inflated attempts (often exceeding MaxAttempts) on the next poll.
+//
+// Expected behavior: empty RequestTubes → no rows returned, no attempts bumped.
+func TestBug_EmptyRequestTubesPollsNothing(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewStore()
+
+	tk, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "worker")
+	if err != nil {
+		t.Fatalf("NewTicket: %v", err)
+	}
+	if err := store.Put(ctx, *tk); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	result, err := store.PollPending(ctx, lymbo.PollRequest{
+		Limit:           10,
+		Now:             time.Now(),
+		TTR:             5 * time.Minute,
+		BackoffBase:     2.0,
+		MaxBackoffDelay: 10 * time.Minute,
+		RequestTubes:    nil, // mimic Kharon.Tubes() when tubesOn=true && no Subscribe()
+	})
+	if err != nil {
+		t.Fatalf("PollPending: %v", err)
+	}
+	if n := len(result.Tickets); n != 0 {
+		t.Fatalf("BUG: empty RequestTubes returned %d tickets, want 0", n)
+	}
+
+	got, err := store.Get(ctx, tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Attempts != 0 {
+		t.Fatalf("BUG: empty RequestTubes bumped attempts to %d on default-tube ticket", got.Attempts)
 	}
 }

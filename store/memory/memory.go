@@ -203,17 +203,19 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 		return lymbo.PollResult{}, lymbo.ErrLimitInvalid
 	}
 
-	tubes := make([]string, 0, len(req.RequestTubes))
-
 	if len(req.RequestTubes) == 0 {
-		tubes = []string{"default"}
-	} else {
-		for _, t := range req.RequestTubes {
-			tubes = append(tubes, t.String())
-		}
-		slices.Sort(tubes)
-		tubes = slices.Compact(tubes)
+		// Empty subscription set: caller wants to poll no tubes.
+		// Return early so we don't silently select the default tube
+		// and bump attempts on tickets the caller doesn't own.
+		return lymbo.PollResult{}, nil
 	}
+
+	tubes := make([]string, 0, len(req.RequestTubes))
+	for _, t := range req.RequestTubes {
+		tubes = append(tubes, t.String())
+	}
+	slices.Sort(tubes)
+	tubes = slices.Compact(tubes)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
