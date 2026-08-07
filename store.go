@@ -20,9 +20,10 @@ type PollRequest struct {
 }
 
 type DelayBackoff struct {
-	Base     float64
-	Jitter   time.Duration
-	MaxDelay time.Duration
+	Base        float64
+	Jitter      time.Duration
+	MaxDelay    time.Duration
+	MaxAttempts int32
 }
 
 type UpdateSet struct {

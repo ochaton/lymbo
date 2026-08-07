@@ -361,13 +361,14 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, sql.NullInt16{Valid: false})
 		}
 
-		// runat as $4 (update) or $4/$5/$6 (backoff)
+		// runat as $4 (update) or $4/$5/$6/$7 (backoff)
 		switch {
 		case us.Backoff != nil:
 			q = r.queries.backoff
 			req = append(req,
 				us.Backoff.Jitter.Seconds(),
 				us.Backoff.Base,
+				us.Backoff.MaxAttempts,
 				us.Backoff.MaxDelay.Seconds(),
 			)
 		case us.Runat != nil:
@@ -455,6 +456,9 @@ type pollPendingParams struct {
 func clampMaxAttempts(maxDelay int32, backoffBase float64) int32 {
 	if backoffBase <= 1 {
 		return math.MaxInt32
+	}
+	if maxDelay <= 0 {
+		return 0
 	}
 	return int32(math.Ceil(math.Log(float64(maxDelay)) / math.Log(backoffBase)))
 }
