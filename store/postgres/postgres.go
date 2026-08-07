@@ -361,7 +361,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, sql.NullInt16{Valid: false})
 		}
 
-		// runat as $4 (update) or $4/$5/$6 (backoff)
+		// runat as $4 (update) or $4/$5/$6/$7 (backoff)
 		switch {
 		case us.Backoff != nil:
 			q = r.queries.backoff
@@ -369,6 +369,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 				us.Backoff.Jitter.Seconds(),
 				us.Backoff.Base,
 				us.Backoff.MaxDelay.Seconds(),
+				clampMaxAttempts(int32(us.Backoff.MaxDelay.Seconds()), us.Backoff.Base),
 			)
 		case us.Runat != nil:
 			q = r.queries.update
@@ -378,7 +379,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, sql.NullTime{Valid: false})
 		}
 
-		// payload as $5 (update) or $7 (backoff)
+		// payload as $5 (update) or $8 (backoff)
 		switch {
 		case us.Payload != nil:
 			req = append(req, us.Payload)
@@ -386,7 +387,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, nil)
 		}
 
-		// error_reason as $6 (update) or $8 (backoff)
+		// error_reason as $6 (update) or $9 (backoff)
 		switch {
 		case us.ErrorReason != nil:
 			req = append(req, us.ErrorReason)
@@ -394,7 +395,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, nil)
 		}
 
-		// tube as $7 (update) or $9 (backoff)
+		// tube as $7 (update) or $10 (backoff)
 		switch {
 		case us.Tube != nil:
 			req = append(req, string(*us.Tube))
@@ -402,7 +403,7 @@ func (r *Tickets) UpdateBatch(ctx context.Context, updates []lymbo.UpdateSet) ([
 			req = append(req, nil)
 		}
 
-		// group_id as $8 (update) or $10 (backoff)
+		// group_id as $8 (update) or $11 (backoff)
 		switch {
 		case us.GroupId != nil:
 			req = append(req, *us.GroupId)
@@ -455,6 +456,11 @@ type pollPendingParams struct {
 func clampMaxAttempts(maxDelay int32, backoffBase float64) int32 {
 	if backoffBase <= 1 {
 		return math.MaxInt32
+	}
+	// Log(0) is -Inf and its int32 conversion is implementation-defined; for
+	// maxDelay <= 1s an exponent of 1 already reaches or exceeds the cap.
+	if maxDelay <= 1 {
+		return 1
 	}
 	return int32(math.Ceil(math.Log(float64(maxDelay)) / math.Log(backoffBase)))
 }

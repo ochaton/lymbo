@@ -110,8 +110,7 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 		t.Runat = time.Now().Add(o.delay.fixed.duration)
 	case delayExponential:
 		// exponential backoff support
-		delay := time.Duration(float64(time.Second) * math.Pow(o.delay.exponential.base, float64(t.Attempts)))
-		delay = min(delay, o.delay.exponential.maxDelay)
+		delay := ExpBackoffDelay(o.delay.exponential.base, t.Attempts, o.delay.exponential.maxDelay)
 		t.Runat = time.Now().Add(delay)
 	default:
 		// no delay

@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"math"
 	"slices"
 	"sort"
 	"sync"
@@ -132,8 +131,7 @@ func updateOne(t *lymbo.Ticket, us lymbo.UpdateSet) {
 		t.Nice = *us.Nice
 	}
 	if us.Backoff != nil {
-		delay := time.Duration(math.Pow(us.Backoff.Base, float64(t.Attempts)) * float64(time.Second))
-		delay = min(delay, us.Backoff.MaxDelay)
+		delay := lymbo.ExpBackoffDelay(us.Backoff.Base, t.Attempts, us.Backoff.MaxDelay)
 		delay += us.Backoff.Jitter
 		t.Runat = time.Now().Add(delay)
 	} else if us.Runat != nil {
@@ -261,8 +259,7 @@ func (m *Store) PollPending(_ context.Context, req lymbo.PollRequest) (lymbo.Pol
 	for i := range ready {
 		ready[i].ReadyAt = ready[i].Runat
 		t := ready[i]
-		delay := time.Duration(math.Pow(req.BackoffBase, float64(t.Attempts)) * float64(time.Second))
-		delay = min(delay, req.MaxBackoffDelay)
+		delay := lymbo.ExpBackoffDelay(req.BackoffBase, t.Attempts, req.MaxBackoffDelay)
 		delay += req.TTR
 		t.Runat = req.Now.Add(delay)
 		t.Attempts++

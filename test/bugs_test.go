@@ -116,3 +116,63 @@ func TestBug_EmptyRequestTubesPollsNothing(t *testing.T) {
 		t.Fatalf("BUG: empty RequestTubes bumped attempts to %d on default-tube ticket", got.Attempts)
 	}
 }
+
+// TestBug_ExpBackoffDelayOverflow guards the Go-side backoff computation:
+//
+// The old code converted base^attempts seconds to time.Duration BEFORE taking
+// min() with maxDelay. base^attempts stops fitting into int64 nanoseconds at
+// modest attempt counts (1.5^57s already overflows), and Go's float-to-integer
+// conversion is implementation-defined for out-of-range values — negative on
+// amd64 — so min() picked the garbage value and the ticket retried immediately.
+func TestBug_ExpBackoffDelayOverflow(t *testing.T) {
+	const maxDelay = 30 * time.Second
+
+	// Below the cap the exact exponential value is preserved.
+	if got, want := lymbo.ExpBackoffDelay(1.5, 2, maxDelay), time.Duration(2.25*float64(time.Second)); got != want {
+		t.Fatalf("attempts=2: want %v, got %v", want, got)
+	}
+
+	// At and past the cap the result is exactly maxDelay — including attempt
+	// counts where the unclamped float no longer fits into int64 nanoseconds.
+	for _, attempts := range []int{10, 57, 100, 1751, 25000} {
+		if got := lymbo.ExpBackoffDelay(1.5, attempts, maxDelay); got != maxDelay {
+			t.Fatalf("BUG: attempts=%d: want capped %v, got %v", attempts, maxDelay, got)
+		}
+	}
+}
+
+// TestBug_MemoryBackoffOverflow exercises the same overflow through the memory
+// store's backoff update path: a ticket with a huge attempts count must be
+// rescheduled to now+maxDelay, not to the past.
+func TestBug_MemoryBackoffOverflow(t *testing.T) {
+	ctx := context.Background()
+	store := memory.NewStore()
+
+	tk, err := lymbo.NewTicket(lymbo.TicketId(uuid.NewString()), "worker")
+	if err != nil {
+		t.Fatalf("NewTicket: %v", err)
+	}
+	tk.Attempts = 2000
+	if err := store.Put(ctx, *tk); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	before := time.Now()
+	if _, err := store.UpdateBatch(ctx, []lymbo.UpdateSet{{
+		Id:      tk.ID,
+		Backoff: &lymbo.DelayBackoff{Base: 1.5, MaxDelay: 30 * time.Second},
+	}}); err != nil {
+		t.Fatalf("UpdateBatch: %v", err)
+	}
+
+	got, err := store.Get(ctx, tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Runat.Before(before) {
+		t.Fatalf("BUG: backoff with attempts=2000 scheduled runat in the past: %v", got.Runat)
+	}
+	if d := got.Runat.Sub(before); d > 31*time.Second {
+		t.Fatalf("BUG: backoff delay not capped at maxDelay: %v", d)
+	}
+}

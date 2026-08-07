@@ -3,6 +3,7 @@ package lymbo
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 
 	"github.com/ochaton/lymbo/status"
@@ -23,6 +24,20 @@ type DelayBackoff struct {
 	Base     float64
 	Jitter   time.Duration
 	MaxDelay time.Duration
+}
+
+// ExpBackoffDelay returns min(base^attempts, maxDelay). The cap is applied in
+// float64 seconds before converting to time.Duration: base^attempts stops
+// fitting into int64 nanoseconds at modest attempt counts (1.5^57s already
+// overflows), and Go's float-to-integer conversion is implementation-defined
+// for out-of-range values. The comparison is inverted so that +Inf and NaN
+// also fall back to maxDelay.
+func ExpBackoffDelay(base float64, attempts int, maxDelay time.Duration) time.Duration {
+	seconds := math.Pow(base, float64(attempts))
+	if maxSeconds := maxDelay.Seconds(); !(seconds < maxSeconds) {
+		return maxDelay
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 type UpdateSet struct {
