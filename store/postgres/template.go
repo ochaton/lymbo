@@ -109,7 +109,7 @@ SET
 WHERE id = $1
 RETURNING id, type, tube, status`))
 
-// runat = now() + {jitter} + min(pow({base}, attempt), {max})
+// runat = now() + {jitter} + min(pow({base}, min(attempt, max_attempt)), {max})
 var backoff = template.Must(template.New("backoff").Parse(`-- name: BackoffTicket:
 WITH del_deps AS (
 	DELETE FROM {{.TableName}}_deps
@@ -120,11 +120,11 @@ UPDATE {{.TableName}}
 SET
 	status = COALESCE($2, status),
 	nice = COALESCE($3, nice),
-	runat = now() + (GREATEST($4,0) + LEAST(POWER($5, attempts), $6)) * INTERVAL '1 second',
-	payload = COALESCE($7, payload),
-	error_reason = COALESCE($8, error_reason),
-	tube = COALESCE($9, tube),
-	group_id = COALESCE($10, group_id)
+	runat = now() + (GREATEST($4,0) + LEAST(POWER($5, LEAST(attempts, $6)), $7)) * INTERVAL '1 second',
+	payload = COALESCE($8, payload),
+	error_reason = COALESCE($9, error_reason),
+	tube = COALESCE($10, tube),
+	group_id = COALESCE($11, group_id)
 WHERE id = $1
 RETURNING id, type, tube, status`))
 

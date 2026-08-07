@@ -110,8 +110,11 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 		t.Runat = time.Now().Add(o.delay.fixed.duration)
 	case delayExponential:
 		// exponential backoff support
-		delay := time.Duration(float64(time.Second) * math.Pow(o.delay.exponential.base, float64(t.Attempts)))
-		delay = min(delay, o.delay.exponential.maxDelay)
+		// Clamp in float seconds before converting to Duration: past ~57 attempts
+		// (base 1.5) math.Pow(...) * float64(time.Second) exceeds int64 range and
+		// the Duration conversion is implementation-defined (can go negative).
+		delaySeconds := min(math.Pow(o.delay.exponential.base, float64(t.Attempts)), o.delay.exponential.maxDelay.Seconds())
+		delay := time.Duration(delaySeconds * float64(time.Second))
 		t.Runat = time.Now().Add(delay)
 	default:
 		// no delay
@@ -145,6 +148,16 @@ func beforeUpdate(ctx context.Context, t *Ticket, o *Opts) error {
 	return nil
 }
 
+func clampMaxAttempts(maxDelay time.Duration, backoffBase float64) int32 {
+	if backoffBase <= 1 {
+		return math.MaxInt32
+	}
+	if maxDelay <= 0 {
+		return 0
+	}
+	return int32(math.Ceil(math.Log(maxDelay.Seconds()) / math.Log(backoffBase)))
+}
+
 func (k *Kharon) save(ctx context.Context, tid TicketId, intent stats.Metric, o *Opts) error {
 	if o.update != nil {
 		return k.store.Update(ctx, tid, func(ctx context.Context, t *Ticket) error {
@@ -167,10 +180,12 @@ func (k *Kharon) save(ctx context.Context, tid TicketId, intent stats.Metric, o 
 		us.Runat = new(time.Time)
 		*us.Runat = time.Now().Add(o.delay.fixed.duration)
 	case delayExponential:
+		md, base := o.delay.exponential.maxDelay, o.delay.exponential.base
 		us.Backoff = &DelayBackoff{
-			Base:     o.delay.exponential.base,
-			MaxDelay: o.delay.exponential.maxDelay,
-			Jitter:   o.delay.exponential.jitter,
+			Base:        o.delay.exponential.base,
+			MaxDelay:    o.delay.exponential.maxDelay,
+			Jitter:      o.delay.exponential.jitter,
+			MaxAttempts: clampMaxAttempts(md, base),
 		}
 	default:
 		// no delay
