@@ -129,6 +129,11 @@ WHERE id = $1
 RETURNING id, type, tube, status`))
 
 // runat = now() + max(ttr, 0) + min(maxDelay, backoffBase^min(t.attempts, maxAttempts))
+//
+// Both ORDER BYs are load-bearing. The one in candidates picks which due tickets
+// a poll takes: without it the plan decides, and a sequential scan takes them in
+// heap order, so a ticket early in the heap wins every poll it is due for. The
+// outer one orders the result, because UPDATE ... RETURNING has no defined order.
 var poll = template.Must(template.New("poll").Parse(`-- name: PollTickets:
 WITH candidates AS (
 	SELECT t.id, t.runat AS ready_at
@@ -139,21 +144,27 @@ WITH candidates AS (
 	  AND NOT EXISTS (
 	      SELECT 1 FROM {{.TableName}}_deps d WHERE d.ticket_id = t.id LIMIT 1
 	  )
+	ORDER BY t.runat, t.nice
 	LIMIT $6
 	FOR UPDATE SKIP LOCKED
+),
+polled AS (
+	UPDATE {{.TableName}} AS t
+	SET
+		attempts = attempts + 1,
+		runat = $1::Timestamptz +
+			(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
+			* INTERVAL '1 second'
+	FROM candidates c
+	WHERE t.id = c.id
+	RETURNING
+		t.id, t.status, t.tube, t.runat, t.nice, t.type,
+		t.ctime, t.mtime, t.attempts, t.payload, t.error_reason,
+		c.ready_at
 )
-UPDATE {{.TableName}} AS t
-SET
-	attempts = attempts + 1,
-	runat = $1::Timestamptz +
-		(GREATEST($2, 0) + LEAST($3, POWER($4, LEAST(t.attempts, $5))))
-		* INTERVAL '1 second'
-FROM candidates c
-WHERE t.id = c.id
-RETURNING
-	t.id, t.status, t.tube, t.runat, t.nice, t.type,
-	t.ctime, t.mtime, t.attempts, t.payload, t.error_reason,
-	c.ready_at;`))
+SELECT id, status, tube, runat, nice, type, ctime, mtime, attempts, payload, error_reason, ready_at
+FROM polled
+ORDER BY ready_at, nice;`))
 
 var putAfterGroup = template.Must(template.New("putAfterGroup").Parse(`-- name: PutAfterGroup:
 WITH inserted AS (
